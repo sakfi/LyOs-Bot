@@ -80,6 +80,68 @@ class LyosGameBot:
             Logger.error(f"[Acc #{self.account_index}] Bank deposit error: {e}")
         return False
 
+    async def claim_quests(self) -> bool:
+        """
+        Fetches daily/general quests & tasks list and automatically claims any completed rewards.
+        """
+        try:
+            Logger.info(f"[Quests] Checking available quests and daily tasks...")
+            endpoints = ["tasks", "quests", "daily/tasks", "user/quests"]
+            res = None
+            
+            for ep in endpoints:
+                r = await self.client.get(f"{BASE_URL}/{ep}")
+                if r.status_code == 200:
+                    res = r
+                    Logger.info(f"[Quests] Discovered active tasks endpoint: GET /api/{ep}")
+                    break
+
+            if res and res.status_code == 200:
+                data = res.json()
+                quests = data.get("quests") or data.get("tasks") or data.get("data") or (data if isinstance(data, list) else [])
+                if isinstance(quests, dict):
+                    quests = quests.get("quests") or quests.get("tasks") or quests.get("daily") or []
+
+                claimed_count = 0
+                for quest in quests:
+                    if not isinstance(quest, dict):
+                        continue
+                    q_id = quest.get("id") or quest.get("_id") or quest.get("taskId")
+                    title = quest.get("title") or quest.get("name") or f"Quest_{q_id}"
+                    completed = quest.get("completed") or quest.get("isCompleted") or quest.get("ready") or quest.get("status") in ("completed", "ready")
+                    claimed = quest.get("claimed") or quest.get("isClaimed") or quest.get("status") == "claimed"
+
+                    if completed and not claimed and q_id:
+                        Logger.info(f"[Quests] Claiming reward for quest: '{title}' (ID: {q_id})...")
+                        for claim_ep in ["tasks/claim", "quests/claim", "task/claim"]:
+                            claim_res = await self.client.post(f"{BASE_URL}/{claim_ep}", json={"questId": q_id, "taskId": q_id, "id": q_id})
+                            if claim_res.status_code in (200, 201):
+                                Logger.success(f"[Quests] Successfully claimed quest: '{title}'!")
+                                claimed_count += 1
+                                break
+
+                if claimed_count == 0:
+                    Logger.info("[Quests] No unclaimed completed quests found.")
+                return True
+            else:
+                Logger.info("[Quests] Quests endpoint status: 404/Unavailable.")
+        except Exception as e:
+            Logger.error(f"[Quests] Error claiming quests: {e}")
+        return False
+
+    async def daily_checkin(self) -> bool:
+        try:
+            res = await self.client.post(f"{BASE_URL}/daily/claim")
+            if res.status_code in (200, 201):
+                Logger.success(f"[Account #{self.account_index}] Daily check-in successful!")
+                return True
+            else:
+                Logger.info(f"[Account #{self.account_index}] Daily check-in response: HTTP {res.status_code}")
+                return False
+        except Exception as e:
+            Logger.error(f"[Account #{self.account_index}] Error completing daily check-in: {e}")
+        return False
+
     # ------------------------------------------------------------------
     # Target Discovery (Scan Tab -> Random Scan)
     # ------------------------------------------------------------------
@@ -368,7 +430,11 @@ class LyosGameBot:
     async def run_workflow(self, target_active_jobs: int = 10):
         Logger.info(f"--- Starting Session for Account #{self.account_index} ---")
         
-        # 0. Check and log all active running processes & system free RAM
+        # 0. Check and claim daily quests
+        if self.config.get("auto_complete_tasks", True):
+            await self.claim_quests()
+
+        # 1. Check and log all active running processes & system free RAM
         await self.log_active_processes()
 
         active_bypasses: Dict[str, dict] = {}  # ip -> job_data
