@@ -10,9 +10,41 @@
 
 <br/>
 
-<img src="https://readme-typing-svg.demolab.com?font=Fira+Code&weight=600&size=22&pause=1000&color=00FF88&center=true&vcenter=true&width=700&lines=AUTONOMOUS+FIREWALL+BREACHING;SELF-INTELLIGENT+RAM+GUARD+%26+RECOVERY;AUTOMATED+BANK+PROTECTION+%26+DEPOSITS;DYNAMIC+LEVEL-378+MINER+DEPLOYMENT" alt="Typing SVG" />
+<img src="https://readme-typing-svg.demolab.com?font=Fira+Code&weight=700&size=24&pause=1000&color=00FF88&center=true&vcenter=true&width=800&lines=%3E_++LYOS+AUTONOMOUS+CYBER+ENGINE+v26.07;%3E_++SELF-INTELLIGENT+RAM+GUARD+ACTIVE;%3E_++AUTOMATED+BANK+VAULT+DEFENSE;%3E_++DYNAMIC+LEVEL-378+MINER+DEPLOYMENT" alt="Glowing Cyber Header" />
 
 </div>
+
+---
+
+## 🖥️ System Specifications & Telemetry
+
+```yaml
+System Specification: LYOS-CYBER-ENGINE
+Engine Core Version: 6.1.175-LYOS-CYBER/v26.07.22-AUTONOMOUS
+Framework: Python 3.10+ (AsyncIO / HTTPX)
+Target Platform: LyOS Telegram MiniApp (https://lyos.fly.dev)
+
+Core Hacking Modules:
+- Autonomous Execution:
+  - Startup Wallet Auto-Deposit (Immediate Vault Protection)
+  - 1-Hour Vault Defense Loop (Background Cron Timer)
+  - Self-Intelligent RAM Guard (Auto-Halt when RAM <= 16MB)
+  - Dynamic Memory Recovery (Monitors job timers & freed RAM)
+  - Bypassed Target Focus Mode (Prioritizes >= 15 Bypassed Targets)
+  - Level-378 Miner Deployment (Auto-decrement 378 -> 1)
+  - Anti-Forensics Log Erasure (Pre-siphon & Post-siphon Wiping)
+- System Exploitation:
+  - 9-10 Concurrent Active Bypass Jobs
+  - High-Yield Target Filter (Reputation == 0 & Firewall >= 100)
+  - Multi-Account Session Manager (Randomized Human Delays)
+
+Live System Telemetry:
+  [23:20:01] [+] SYSTEM_INIT: Loaded 1 account session token(s)
+  [23:20:02] [✔] WALLET_GUARD: Transferred 45,000 funds -> In-Game Bank
+  [23:20:05] [⚡] FOCUS_MODE: Detected 16 bypassed targets -> Cracking Banks & Miners
+  [23:20:15] [!] RAM_ALERT: Memory full (12MB free). Halting scans -> Monitoring job timers
+  [23:20:45] [✔] RAM_RECOVERED: 128MB free memory restored -> Resuming core operations
+```
 
 ---
 
@@ -43,7 +75,7 @@ graph TD
 
 ---
 
-## ⚡ Core Hacking Capabilities
+## ⚡ Core Hacking Capabilities Matrix
 
 | Feature Module | Description | Technical Mechanism |
 | :--- | :--- | :--- |
@@ -54,24 +86,6 @@ graph TD
 | 🔍 **Precision Target Discovery** | High-value target filtering | Filters for **`Reputation == 0`** & **`Firewall Level >= 100`** across 5-target scan batches. |
 | 🔒 **Anti-Forensics Log Wipe** | Trace sanitization | Double log-cleaning protocol (pre-siphon and post-siphon) to ensure total anonymity. |
 | 🔄 **Multi-Account Orchestration** | Asynchronous session manager | Handles infinite account rotation with randomized human-like delays. |
-
----
-
-## 💻 Live Cyber Terminal Interface
-
-```text
-=====================================================
-            LYOS TELEGRAM MINIAPP BOT               
-  Auto-Breach | RAM Guard | Bank Vault | Multi-Acc  
-=====================================================
-
-[23:20:00] [INFO] Loaded 1 account(s) from data.txt.
-[23:20:01] [Startup Check] Checking wallet balance and securing funds to Bank...
-[23:20:02] [SUCCESS] Deposited 45,000 funds from Wallet -> In-Game Bank.
-[23:20:03] [FOCUS MODE] Detected 16 bypassed targets! Pausing scans -> Cracking Banks...
-[23:20:10] [RAM Guard] System memory full (12MB free). Operations halted. Monitoring timers...
-[23:20:45] [RAM Freed] Job completed! 128MB RAM freed up. Resuming operations.
-```
 
 ---
 
