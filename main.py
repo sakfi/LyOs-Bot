@@ -11,9 +11,35 @@ BANNER = """
 =====================================================
 """
 
-async def process_account(account_data: str, config: dict, index: int):
+async def process_account(account_data: str, config: dict, index: int, mode: str):
     bot = LyosGameBot(init_data=account_data, config=config, account_index=index)
-    await bot.run_workflow()
+    await bot.run_workflow(mode=mode)
+
+def get_user_mode_choice() -> str:
+    print("""
+=====================================================
+            SELECT OPERATIONAL MODE
+=====================================================
+  [1] Bypass & Crack   - Scanning, Firewall Bypass, Bank Crack & Miners
+  [2] Steal & Transfer - Siphon cracked targets & Vault wallet money -> Bank
+  [3] Quest Mode       - Claim Daily Check-ins, Daily Quests & Siphon Tasks
+  [4] All Modes (Full) - Perform ALL operations continuously with RAM Guard
+=====================================================
+""")
+    try:
+        choice = input("Enter option [1-4] (Default: 4): ").strip()
+    except (EOFError, KeyboardInterrupt):
+        choice = "4"
+
+    mode_map = {
+        "1": "bypass_crack",
+        "2": "steal_transfer",
+        "3": "quest",
+        "4": "all"
+    }
+    selected_mode = mode_map.get(choice, "all")
+    Logger.info(f"Selected Mode: {selected_mode.upper()}")
+    return selected_mode
 
 async def main():
     print(BANNER)
@@ -26,9 +52,12 @@ async def main():
 
     Logger.info(f"Loaded {len(accounts)} account(s) from data.txt.")
 
+    # Get user mode choice on startup
+    mode = get_user_mode_choice()
+
     while True:
         for idx, account_data in enumerate(accounts, start=1):
-            await process_account(account_data, config, idx)
+            await process_account(account_data, config, idx, mode)
 
             # Delay between accounts
             if idx < len(accounts):

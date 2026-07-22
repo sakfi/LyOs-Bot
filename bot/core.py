@@ -761,11 +761,81 @@ class LyosGameBot:
             pass
 
     # ------------------------------------------------------------------
-    # Master Workflow Execution (Maintain 9-10 Active Bypass Jobs)
+    # Master Workflow Execution (Multi-Mode Operations Engine)
     # ------------------------------------------------------------------
-    async def run_workflow(self, target_active_jobs: int = 10):
-        Logger.info(f"--- Starting Session for Account #{self.account_index} ---")
+    async def run_workflow(self, mode: str = "all", target_active_jobs: int = 10):
+        Logger.info(f"--- Starting Session for Account #{self.account_index} (Mode: {mode.upper()}) ---")
         
+        # ------------------------------------------------------------------
+        # MODE 2: STEAL & TRANSFER ONLY
+        # ------------------------------------------------------------------
+        if mode == "steal_transfer":
+            Logger.info(f"[Mode: Steal & Transfer] Sweeping all bypassed targets for siphoning & depositing to Bank...")
+            await self.siphon_and_secure_all_bypassed_targets()
+            await self.close()
+            return
+
+        # ------------------------------------------------------------------
+        # MODE 3: QUEST MODE ONLY
+        # ------------------------------------------------------------------
+        if mode == "quest":
+            Logger.info(f"[Mode: Quest] Checking & claiming daily quests & check-in rewards...")
+            if self.config.get("auto_daily_checkin", True):
+                await self.daily_checkin()
+            if self.config.get("auto_complete_tasks", True):
+                await self.claim_quests()
+            # Perform a siphon & deposit sweep to complete any pending transfer tasks
+            await self.siphon_and_secure_all_bypassed_targets()
+            await self.close()
+            return
+
+        # ------------------------------------------------------------------
+        # MODE 1: BYPASS & CRACK ONLY
+        # ------------------------------------------------------------------
+        if mode == "bypass_crack":
+            Logger.info(f"[Mode: Bypass & Crack] Running Target Scanning, Firewall Breaches, Bank Cracks & Miners...")
+            sys_status = await self.get_system_status()
+            if sys_status.get("total_ram", 0) > 0 and sys_status.get("free_ram", 0) <= 16:
+                await self.wait_for_ram_and_monitor(required_ram=32)
+
+            await self.log_active_processes()
+            
+            focused = await self.focus_bypassed_targets_crack_and_miner(threshold=15)
+            if not focused:
+                active_bypasses: Dict[str, dict] = {}
+                while len(active_bypasses) < target_active_jobs:
+                    sys_status = await self.get_system_status()
+                    if sys_status.get("total_ram", 0) > 0 and sys_status.get("free_ram", 0) <= 16:
+                        await self.wait_for_ram_and_monitor(required_ram=32)
+
+                    current_count = await self.get_active_jobs_count()
+                    total_active = current_count + len(active_bypasses)
+                    if total_active >= target_active_jobs:
+                        break
+
+                    new_targets = await self.perform_random_scan(max_scans=5)
+                    for target in new_targets:
+                        ip = target.get("ip")
+                        if ip and ip not in active_bypasses:
+                            job = await self.start_firewall_bypass(target)
+                            if job:
+                                active_bypasses[ip] = job
+                            if len(active_bypasses) >= target_active_jobs:
+                                break
+                    await random_sleep(1.0, 2.0)
+
+                Logger.info(f"[Bypass & Crack] Processing {len(active_bypasses)} active bypass jobs...")
+                for ip, job in active_bypasses.items():
+                    duration = job.get("duration_seconds", 30)
+                    await asyncio.sleep(duration + 1)
+                    await self.process_bypassed_target(ip)
+
+            await self.close()
+            return
+
+        # ------------------------------------------------------------------
+        # MODE 4: ALL MODES (ALL) - Autonomous Engine
+        # ------------------------------------------------------------------
         # 0. First Turn-On / Startup Check: Sweep all bypassed targets for siphoning & secure all wallet funds -> bank immediately
         Logger.info(f"[Startup Sweep] Running full siphon & vault sweep across all bypassed targets on bot startup...")
         await self.siphon_and_secure_all_bypassed_targets()
@@ -774,7 +844,9 @@ class LyosGameBot:
         deposit_timer_task = asyncio.create_task(self._hourly_deposit_loop())
 
         try:
-            # 1. Check and claim daily quests
+            # 1. Check and claim daily check-in & quests
+            if self.config.get("auto_daily_checkin", True):
+                await self.daily_checkin()
             if self.config.get("auto_complete_tasks", True):
                 await self.claim_quests()
 
