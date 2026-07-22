@@ -229,13 +229,18 @@ class LyosGameBot:
                                 seen_ips.add(ip)
                                 bypassed_targets.append(item)
                     except Exception:
-                        # Parse Next.js RSC payload stream for target IPs (e.g. 10.x.x.x)
+                        # Parse Next.js RSC payload stream for target Object IDs and IPs
                         import re
+                        # Search for patterns like: {"_id":"6908b80eab03d7e282a78616", ... "ip":"10.54.98.24"}
+                        target_id_matches = re.findall(r'"(?:_id|targetId|id)":"([a-f0-9]{24})"', text_content)
                         ip_matches = re.findall(r'(\b10\.\d{1,3}\.\d{1,3}\.\d{1,3}\b)', text_content)
-                        for found_ip in ip_matches:
+                        
+                        # Pair IDs and IPs if found in stream
+                        for idx, found_ip in enumerate(ip_matches):
                             if found_ip not in seen_ips:
                                 seen_ips.add(found_ip)
-                                bypassed_targets.append({"ip": found_ip, "targetId": found_ip, "bypassed": True})
+                                tid = target_id_matches[idx] if idx < len(target_id_matches) else found_ip
+                                bypassed_targets.append({"ip": found_ip, "targetId": tid, "bypassed": True})
 
             except Exception:
                 continue
