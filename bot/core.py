@@ -176,10 +176,11 @@ class LyosGameBot:
     # Target Discovery & Bypassed Management
     # ------------------------------------------------------------------
     async def get_bypassed_targets(self) -> List[Dict]:
-        """Fetch list of already bypassed target accounts from server API & Next.js RSC hack page."""
+        """Fetch ALL bypassed target accounts from server API & Next.js RSC hack page."""
         endpoints = [
+            f"{BASE_URL}/targets?bypassed=true&limit=100",
+            f"{BASE_URL}/targets?limit=100",
             f"{BASE_URL}/targets/bypassed",
-            f"{BASE_URL}/targets",
             f"{BASE_URL}/processes",
             "https://lyos.fly.dev/apps/hack"
         ]
@@ -189,7 +190,6 @@ class LyosGameBot:
 
         for ep in endpoints:
             try:
-                # Send Next.js RSC header for Next.js App Router compatibility
                 req_headers = self.headers.copy()
                 if "apps/hack" in ep:
                     req_headers["RSC"] = "1"
@@ -210,6 +210,8 @@ class LyosGameBot:
                                 raw.get("targets") or raw.get("bypassed") or raw.get("data") or
                                 raw.get("bypassedTargets") or raw.get("processes") or raw.get("list") or []
                             )
+                            if not candidates and isinstance(raw.get("accounts"), list):
+                                candidates = raw.get("accounts")
                         
                         for item in candidates:
                             if not isinstance(item, dict):
@@ -225,19 +227,18 @@ class LyosGameBot:
                             )
                             
                             ip = item.get("ip") or item.get("targetIp") or item.get("target_ip")
+                            target_id = item.get("_id") or item.get("id") or item.get("targetId") or ip
                             if ip and ip not in seen_ips and is_bypassed:
                                 seen_ips.add(ip)
-                                bypassed_targets.append(item)
+                                bypassed_targets.append({"ip": ip, "targetId": target_id, "bypassed": True})
                     except Exception:
                         pass
 
-                    # 2. Always run Regex extraction on HTML/RSC stream to catch all target Object IDs & IPs
+                    # 2. Always extract JSON-like target blocks from text/RSC stream
                     import re
-                    # Look for 24-char MongoDB Object IDs
-                    hex_ids = re.findall(r'[a-f0-9]{24}', text_content)
+                    # Find all 10.x.x.x IPs and 24-char MongoDB Object IDs
                     ip_matches = re.findall(r'\b10\.\d{1,3}\.\d{1,3}\.\d{1,3}\b', text_content)
-                    
-                    # Filter out non-target hex strings if any
+                    hex_ids = re.findall(r'[a-f0-9]{24}', text_content)
                     valid_ids = list(dict.fromkeys(hex_ids))
                     
                     for idx, found_ip in enumerate(ip_matches):
@@ -786,18 +787,13 @@ class LyosGameBot:
             await self.siphon_target_funds(target_id, target_ip)
             await random_sleep(1, 2)
 
-        # Step E: Final Log Wiping
-        Logger.info(f"[Step E] Final log wipe on {target_ip}...")
-        await self._trigger_action("logs", target_id)
-
         Logger.success(f"=== Completed Post-Bypass Steps for IP: {target_ip} ===")
 
     async def siphon_and_secure_all_bypassed_targets(self):
         """
         Sweeps all currently bypassed targets:
-        1. Siphons cracked bank funds into wallet (Type 4 or fallback endpoints).
-        2. Clears target logs (Type 3).
-        3. Secures wallet funds into in-game Bank (/api/bank/deposit).
+        1. Siphons cracked bank funds into wallet via Steal Engine.
+        2. Secures wallet funds into in-game Bank (/api/bank/deposit).
         """
         Logger.info(f"[Acc #{self.account_index}] ⚡ Running Siphon & Vault Sweep across all bypassed targets...")
         
@@ -817,10 +813,6 @@ class LyosGameBot:
                 if target_id and target_ip:
                     Logger.info(f"[Siphon #{idx}/{len(bypassed_list)}] Siphoning cracked funds from IP: {target_ip} (ID: {target_id}) -> Wallet...")
                     await self.siphon_target_funds(target_id, target_ip)
-                    await random_sleep(0.5, 1.0)
-                    
-                    # Wipe logs post-siphon
-                    await self._trigger_action("logs", target_id)
                     await random_sleep(0.5, 1.0)
 
         # 2. Deposit all siphoned wallet money into Bank
