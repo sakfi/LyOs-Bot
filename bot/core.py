@@ -164,23 +164,17 @@ class LyosGameBot:
                 if res.status_code == 200:
                     raw_data = res.json()
                     
-                    # Parse different possible JSON response structures
                     if isinstance(raw_data, list):
                         accounts = raw_data
                     elif isinstance(raw_data, dict):
-                        accounts = (
-                            raw_data.get("accounts")
-                            or raw_data.get("targets")
-                            or raw_data.get("data")
-                            or raw_data.get("results")
-                            or []
-                        )
-                        if isinstance(accounts, dict):
-                            accounts = accounts.get("accounts") or accounts.get("targets") or []
+                        accounts = raw_data.get("targets") or raw_data.get("accounts") or raw_data.get("data") or []
                     else:
                         accounts = []
 
-                    Logger.info(f"[Scan #{scan_idx}] Discovered {len(accounts)} random targets.")
+                    if isinstance(accounts, dict):
+                        accounts = accounts.get("accounts", []) or accounts.get("targets", [])
+
+                    Logger.info(f"[Scan #{scan_idx}/{max_scans}] Discovered {len(accounts)} random targets.")
 
                     for acc in accounts:
                         if not isinstance(acc, dict):
@@ -207,15 +201,16 @@ class LyosGameBot:
                                 Logger.success(f"[Matched Target] IP: {ip} (ID: {acc['targetId']}) | Rep: {rep} | Firewall: {firewall}")
                                 matched_targets.append(acc)
                             else:
-                                Logger.info(f"[Skipped Non-Matching Target] IP: {ip} | Rep: {rep} | Firewall: {firewall} (Requires: Rep==0 & Firewall>=100)")
+                                Logger.info(f"[Skipped Target] IP: {ip} | Rep: {rep} | Firewall: {firewall} (Requires Rep==0 & Firewall>=100)")
                 else:
                     Logger.warning(f"Random scan returned HTTP {res.status_code}")
             except Exception as e:
                 Logger.error(f"Error during random scan iteration {scan_idx}: {e}")
 
-            await random_sleep(1.5, 3.0, reason="Next random scan delay")
+            if scan_idx < max_scans:
+                await random_sleep(1.0, 2.0, reason="Next random scan batch delay")
 
-        Logger.info(f"[Scan Complete] Found {len(matched_targets)} matching target(s).")
+        Logger.info(f"[Scan Batch Complete] Found {len(matched_targets)} matching target(s) across {max_scans} scan clicks.")
         return matched_targets
 
     # ------------------------------------------------------------------
@@ -520,8 +515,8 @@ class LyosGameBot:
                 Logger.info(f"Target capacity reached ({total_active} active jobs). Stopping scans.")
                 break
 
-            Logger.info(f"Current active bypasses: {total_active}/{target_active_jobs}. Triggering Random Scan...")
-            new_targets = await self.perform_random_scan(max_scans=1)
+            Logger.info(f"Current active bypasses: {total_active}/{target_active_jobs}. Triggering Batch Random Scan (5 Clicks)...")
+            new_targets = await self.perform_random_scan(max_scans=5)
 
             for target in new_targets:
                 ip = target.get("ip")
