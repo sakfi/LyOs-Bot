@@ -1,0 +1,4 @@
+# Paste your Telegram WebApp initData / query_id strings here (one per line).
+# Example format:
+# query_id=AA...&user=%7B%22id%22%3A...%7D&auth_date=...&hash=...
+# Auth Session token: __Secure-next-auth.session-token=
