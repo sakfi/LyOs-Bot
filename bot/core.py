@@ -565,8 +565,9 @@ class LyosGameBot:
         Logger.warning(f"[RAM Guard] System Memory (RAM) is FULL/EXHAUSTED! Halting operation & bypass target scanning.")
 
         while True:
-            # 1. Look for money in wallet & deposit to bank
-            await self.secure_wallet_to_bank()
+            # 1. Sweep all bypassed targets for siphoning & deposit wallet money to bank (requires 0 RAM)
+            Logger.info(f"[RAM Guard] RAM is full. Running 0-RAM Siphon & Vault Sweep across bypassed targets...")
+            await self.siphon_and_secure_all_bypassed_targets()
 
             # 2. Check RAM & pending jobs
             sys_status = await self.get_system_status()
