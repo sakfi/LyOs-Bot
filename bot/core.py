@@ -241,11 +241,85 @@ class LyosGameBot:
             Logger.error(f"Error fetching active jobs count: {e}")
         return 0
 
+    # ------------------------------------------------------------------
+    # RAM & Active Processes Tracking
+    # ------------------------------------------------------------------
+    async def get_system_status(self) -> dict:
+        """
+        Fetches system RAM info (total/free) and active running processes.
+        """
+        status = {"free_ram": 0, "active_processes": []}
+        try:
+            res = await self.client.get(f"{BASE_URL}/scan")
+            if res.status_code == 200:
+                raw = res.json()
+                if isinstance(raw, dict):
+                    status["free_ram"] = raw.get("freeRam", 0)
+            
+            # Fetch active processes list
+            proc_res = await self.client.get(f"{BASE_URL}/processes")
+            if proc_res.status_code == 200:
+                p_data = proc_res.json()
+                procs = p_data.get("processes") or p_data.get("data") or p_data if isinstance(p_data, list) else []
+                if isinstance(procs, dict):
+                    procs = procs.get("processes", [])
+                
+                status["active_processes"] = procs
+        except Exception as e:
+            Logger.error(f"Error checking system RAM & processes status: {e}")
+            
+        return status
+
+    async def log_active_processes(self) -> int:
+        """
+        Logs details and remaining time for all currently active processes.
+        Returns the number of running processes.
+        """
+        sys_status = await self.get_system_status()
+        free_ram = sys_status.get("free_ram", 0)
+        processes = sys_status.get("active_processes", [])
+        
+        Logger.info(f"[System Memory] Current Free RAM: {free_ram} MB")
+        if not processes:
+            Logger.info("[Process Monitor] No active running processes.")
+            return 0
+
+        Logger.info(f"[Process Monitor] Found {len(processes)} active running process(es):")
+        for idx, proc in enumerate(processes, start=1):
+            p_type = proc.get("type", "UNKNOWN")
+            target_ip = proc.get("targetIp") or proc.get("ip") or proc.get("target_ip", "Unknown IP")
+            rem_sec = proc.get("remainingSeconds") or proc.get("remaining_seconds") or proc.get("duration", 0)
+            ram_cost = proc.get("ramCost") or proc.get("ram_cost", 0)
+            Logger.info(f"  #{idx} [{p_type}] Target IP: {target_ip} | RAM Used: {ram_cost} MB | Time Remaining: {rem_sec}s")
+
+        return len(processes)
+
     async def start_firewall_bypass(self, target: dict) -> Optional[dict]:
-        """Triggers firewall bypass for a target and records job details."""
+        """
+        Checks RAM budget before triggering firewall bypass.
+        If free RAM is less than target bypassRamCost, waits for active processes to complete.
+        """
         target_id = target.get("targetId") or target.get("id") or target.get("ip")
         target_ip = target.get("ip")
-        Logger.info(f"[Step A] Triggering Firewall Breach on IP: {target_ip} (ID: {target_id})...")
+        ram_cost = target.get("bypassRamCost", 0)
+
+        # Check free RAM budget
+        sys_status = await self.get_system_status()
+        free_ram = sys_status.get("free_ram", 0)
+
+        if ram_cost > 0 and free_ram > 0 and free_ram < ram_cost:
+            Logger.warning(
+                f"[RAM Budget] Target {target_ip} requires {ram_cost} MB RAM, but only {free_ram} MB free RAM available. "
+                "Waiting for active processes to complete and free RAM..."
+            )
+            while free_ram < ram_cost:
+                await asyncio.sleep(5.0)
+                sys_status = await self.get_system_status()
+                free_ram = sys_status.get("free_ram", 0)
+                if sys_status.get("active_processes") == []:
+                    break  # Break if no active processes remain
+
+        Logger.info(f"[Step A] Triggering Firewall Breach on IP: {target_ip} (ID: {target_id}) [RAM Cost: {ram_cost} MB]...")
         job = await self._trigger_action("bypass", target_id)
         if job:
             Logger.success(f"[Step A] Bypass started on {target_ip}.")
@@ -293,6 +367,10 @@ class LyosGameBot:
     # ------------------------------------------------------------------
     async def run_workflow(self, target_active_jobs: int = 10):
         Logger.info(f"--- Starting Session for Account #{self.account_index} ---")
+        
+        # 0. Check and log all active running processes & system free RAM
+        await self.log_active_processes()
+
         active_bypasses: Dict[str, dict] = {}  # ip -> job_data
 
         # Continuous scanning & bypass loop until 9-10 active jobs reached
