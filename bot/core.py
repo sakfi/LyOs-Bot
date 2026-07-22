@@ -124,7 +124,8 @@ class LyosGameBot:
                     Logger.info("[Quests] No unclaimed completed quests found.")
                 return True
             else:
-                Logger.info("[Quests] Quests endpoint status: 404/Unavailable.")
+                # Quests/tasks tab not exposed via rest API endpoint on this server build
+                pass
         except Exception as e:
             Logger.error(f"[Quests] Error claiming quests: {e}")
         return False
