@@ -82,23 +82,16 @@ class LyosGameBot:
 
     async def claim_quests(self) -> bool:
         """
-        Fetches daily/general quests & tasks list and automatically claims any completed rewards.
+        Fetches daily quests from GET /api/daily-quests and automatically claims completed rewards
+        via POST /api/daily-quests/claim.
         """
         try:
-            Logger.info(f"[Quests] Checking available quests and daily tasks...")
-            endpoints = ["tasks", "quests", "daily/tasks", "user/quests"]
-            res = None
+            Logger.info(f"[Quests] Checking daily quests at GET /api/daily-quests...")
+            res = await self.client.get(f"{BASE_URL}/daily-quests")
             
-            for ep in endpoints:
-                r = await self.client.get(f"{BASE_URL}/{ep}")
-                if r.status_code == 200:
-                    res = r
-                    Logger.info(f"[Quests] Discovered active tasks endpoint: GET /api/{ep}")
-                    break
-
-            if res and res.status_code == 200:
+            if res.status_code == 200:
                 data = res.json()
-                quests = data.get("quests") or data.get("tasks") or data.get("data") or (data if isinstance(data, list) else [])
+                quests = data.get("quests") or data.get("tasks") or data.get("dailyQuests") or data.get("data") or (data if isinstance(data, list) else [])
                 if isinstance(quests, dict):
                     quests = quests.get("quests") or quests.get("tasks") or quests.get("daily") or []
 
@@ -106,28 +99,30 @@ class LyosGameBot:
                 for quest in quests:
                     if not isinstance(quest, dict):
                         continue
-                    q_id = quest.get("id") or quest.get("_id") or quest.get("taskId")
-                    title = quest.get("title") or quest.get("name") or f"Quest_{q_id}"
-                    completed = quest.get("completed") or quest.get("isCompleted") or quest.get("ready") or quest.get("status") in ("completed", "ready")
+                    
+                    q_id = quest.get("id") or quest.get("_id") or quest.get("questId") or quest.get("taskId")
+                    title = quest.get("title") or quest.get("name") or quest.get("description") or f"Quest_{q_id}"
+                    completed = quest.get("completed") or quest.get("isCompleted") or quest.get("ready") or quest.get("status") in ("completed", "ready", True)
                     claimed = quest.get("claimed") or quest.get("isClaimed") or quest.get("status") == "claimed"
 
                     if completed and not claimed and q_id:
-                        Logger.info(f"[Quests] Claiming reward for quest: '{title}' (ID: {q_id})...")
-                        for claim_ep in ["tasks/claim", "quests/claim", "task/claim"]:
-                            claim_res = await self.client.post(f"{BASE_URL}/{claim_ep}", json={"questId": q_id, "taskId": q_id, "id": q_id})
-                            if claim_res.status_code in (200, 201):
-                                Logger.success(f"[Quests] Successfully claimed quest: '{title}'!")
-                                claimed_count += 1
-                                break
+                        Logger.info(f"[Quests] Claiming completed daily quest: '{title}' (ID: {q_id})...")
+                        payload = {"questId": q_id, "id": q_id}
+                        claim_res = await self.client.post(f"{BASE_URL}/daily-quests/claim", json=payload)
+                        
+                        if claim_res.status_code in (200, 201):
+                            Logger.success(f"[Quests] Successfully claimed daily quest: '{title}'!")
+                            claimed_count += 1
+                        else:
+                            Logger.warning(f"[Quests] Failed to claim daily quest '{title}': HTTP {claim_res.status_code} - {claim_res.text}")
 
                 if claimed_count == 0:
-                    Logger.info("[Quests] No unclaimed completed quests found.")
+                    Logger.info("[Quests] No unclaimed completed daily quests found.")
                 return True
             else:
-                # Quests/tasks tab not exposed via rest API endpoint on this server build
-                pass
+                Logger.info(f"[Quests] GET /api/daily-quests returned HTTP {res.status_code}")
         except Exception as e:
-            Logger.error(f"[Quests] Error claiming quests: {e}")
+            Logger.error(f"[Quests] Error claiming daily quests: {e}")
         return False
 
     async def daily_checkin(self) -> bool:
