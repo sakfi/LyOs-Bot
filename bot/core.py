@@ -152,21 +152,26 @@ class LyosGameBot:
         """POST action payload to the primary process creation endpoint: /api/process/create"""
         url = f"{BASE_URL}/process/create"
         
-        # Exact payload structure verified on live server:
-        # {"targetId": "...", "type": "BYPASS"}
-        type_enum_map = {
-            "bypass": "BYPASS",
-            "bank": "BANK_CRACK",
-            "miner": "UPLOAD_MINER",
-            "logs": "CLEAR_LOGS",
-            "siphon": "SIPHON"
+        # Empirical server response mappings:
+        # type 0 = Firewall Bypass ("Not enough RAM" when resources exhausted)
+        # type 1 = Bank Crack ("No active connection. You need to bypass first")
+        # type 2 = Miner Upload
+        # type 3 = Clear Logs
+        # type 4 = Siphon Funds
+        type_numeric_map = {
+            "bypass": 0,
+            "bank": 1,
+            "miner": 2,
+            "logs": 3,
+            "siphon": 4
         }
+        
+        num_type = type_numeric_map.get(action_type, 0)
         
         payload = {
             "targetId": target_id,
-            "type": type_enum_map.get(action_type, action_type.upper())
+            "type": num_type
         }
-        
         if extra_params:
             payload.update(extra_params)
 
@@ -176,12 +181,16 @@ class LyosGameBot:
                 Logger.success(f"Action '{action_type}' created successfully on target {target_id}!")
                 data = res.json()
                 return data.get("data", {}) if isinstance(data, dict) else data
+            elif res.status_code == 400 and "Not enough RAM" in res.text:
+                Logger.warning(f"Insufficient RAM to start process '{action_type}' on target {target_id}.")
+            elif res.status_code == 429:
+                Logger.warning(f"Rate limited by server (HTTP 429). Pausing briefly...")
+                await asyncio.sleep(2.0)
             else:
                 Logger.warning(f"POST /api/process/create payload {payload} -> HTTP {res.status_code}: {res.text[:100]}")
         except Exception as e:
             Logger.error(f"Error triggering '{action_type}' on {target_id}: {e}")
 
-        Logger.error(f"Failed to create process '{action_type}' on {target_id}")
         return None
 
     # ------------------------------------------------------------------
