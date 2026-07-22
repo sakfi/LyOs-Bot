@@ -199,7 +199,7 @@ class LyosGameBot:
                 if res.status_code == 200:
                     text_content = res.text
                     
-                    # Try standard JSON parsing
+                    # 1. Try standard JSON parsing
                     try:
                         raw = res.json()
                         candidates = []
@@ -229,18 +229,22 @@ class LyosGameBot:
                                 seen_ips.add(ip)
                                 bypassed_targets.append(item)
                     except Exception:
-                        # Parse Next.js RSC payload stream for target Object IDs and IPs
-                        import re
-                        # Search for patterns like: {"_id":"6908b80eab03d7e282a78616", ... "ip":"10.54.98.24"}
-                        target_id_matches = re.findall(r'"(?:_id|targetId|id)":"([a-f0-9]{24})"', text_content)
-                        ip_matches = re.findall(r'(\b10\.\d{1,3}\.\d{1,3}\.\d{1,3}\b)', text_content)
-                        
-                        # Pair IDs and IPs if found in stream
-                        for idx, found_ip in enumerate(ip_matches):
-                            if found_ip not in seen_ips:
-                                seen_ips.add(found_ip)
-                                tid = target_id_matches[idx] if idx < len(target_id_matches) else found_ip
-                                bypassed_targets.append({"ip": found_ip, "targetId": tid, "bypassed": True})
+                        pass
+
+                    # 2. Always run Regex extraction on HTML/RSC stream to catch all target Object IDs & IPs
+                    import re
+                    # Look for 24-char MongoDB Object IDs
+                    hex_ids = re.findall(r'[a-f0-9]{24}', text_content)
+                    ip_matches = re.findall(r'\b10\.\d{1,3}\.\d{1,3}\.\d{1,3}\b', text_content)
+                    
+                    # Filter out non-target hex strings if any
+                    valid_ids = list(dict.fromkeys(hex_ids))
+                    
+                    for idx, found_ip in enumerate(ip_matches):
+                        if found_ip not in seen_ips:
+                            seen_ips.add(found_ip)
+                            tid = valid_ids[idx] if idx < len(valid_ids) else found_ip
+                            bypassed_targets.append({"ip": found_ip, "targetId": tid, "bypassed": True})
 
             except Exception:
                 continue
