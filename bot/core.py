@@ -304,11 +304,11 @@ class LyosGameBot:
         return 0
 
     # ------------------------------------------------------------------
-    # RAM & Active Processes Tracking
+    # RAM & All Active Processes Tracking
     # ------------------------------------------------------------------
     async def get_system_status(self) -> dict:
         """
-        Fetches system RAM info (total/free) and active running processes.
+        Fetches system RAM info (total/free) and ALL active running processes across all types.
         """
         status = {"free_ram": 0, "active_processes": []}
         try:
@@ -318,13 +318,18 @@ class LyosGameBot:
                 if isinstance(raw, dict):
                     status["free_ram"] = raw.get("freeRam", 0)
             
-            # Fetch active processes list
-            proc_res = await self.client.get(f"{BASE_URL}/processes")
+            # Fetch active processes list from /api/processes endpoint
+            proc_res = await self.client.get(f"{BASE_URL}/processes?status=active&type=all")
+            if proc_res.status_code != 200:
+                proc_res = await self.client.get(f"{BASE_URL}/processes")
+                
             if proc_res.status_code == 200:
                 p_data = proc_res.json()
-                procs = p_data.get("processes") or p_data.get("data") or p_data if isinstance(p_data, list) else []
-                if isinstance(procs, dict):
-                    procs = procs.get("processes", [])
+                procs = []
+                if isinstance(p_data, list):
+                    procs = p_data
+                elif isinstance(p_data, dict):
+                    procs = p_data.get("processes") or p_data.get("active") or p_data.get("data") or []
                 
                 status["active_processes"] = procs
         except Exception as e:
@@ -332,29 +337,97 @@ class LyosGameBot:
             
         return status
 
-    async def log_active_processes(self) -> int:
+    async def log_active_processes(self) -> dict:
         """
-        Logs details and remaining time for all currently active processes.
-        Returns the number of running processes.
+        Logs details, RAM usage, and remaining duration for ALL active processes
+        (Bypass, Crack, Upload, Download, Decompile, Sabotage).
         """
         sys_status = await self.get_system_status()
         free_ram = sys_status.get("free_ram", 0)
         processes = sys_status.get("active_processes", [])
         
-        Logger.info(f"[System Memory] Current Free RAM: {free_ram} MB")
+        # Numeric type map to human readable names
+        TYPE_NAME_MAP = {
+            0: "BYPASS",
+            1: "CRACK",
+            2: "UPLOAD",
+            3: "DOWNLOAD",
+            4: "DECOMPILE",
+            5: "SABOTAGE",
+            "0": "BYPASS",
+            "1": "CRACK",
+            "2": "UPLOAD",
+            "3": "DOWNLOAD",
+            "4": "DECOMPILE",
+            "5": "SABOTAGE"
+        }
+
+        type_counts = {}
+        total_ram_used = 0
+        now_dt = datetime.now()
+
+        Logger.info(f"================ SYSTEM MONITOR ================")
+        Logger.info(f"Available Free RAM: {free_ram} MB")
+
         if not processes:
-            Logger.info("[Process Monitor] No active running processes.")
-            return 0
+            Logger.info("[Process Monitor] No active running processes found.")
+            Logger.info(f"=================================================")
+            return {"total_count": 0, "free_ram": free_ram, "type_counts": {}}
 
-        Logger.info(f"[Process Monitor] Found {len(processes)} active running process(es):")
+        Logger.info(f"[Process Monitor] Found {len(processes)} active process(es) running:")
         for idx, proc in enumerate(processes, start=1):
-            p_type = proc.get("type", "UNKNOWN")
-            target_ip = proc.get("targetIp") or proc.get("ip") or proc.get("target_ip", "Unknown IP")
-            rem_sec = proc.get("remainingSeconds") or proc.get("remaining_seconds") or proc.get("duration", 0)
-            ram_cost = proc.get("ramCost") or proc.get("ram_cost", 0)
-            Logger.info(f"  #{idx} [{p_type}] Target IP: {target_ip} | RAM Used: {ram_cost} MB | Time Remaining: {rem_sec}s")
+            if not isinstance(proc, dict):
+                continue
+                
+            raw_type = proc.get("type") if proc.get("type") is not None else proc.get("processType", "UNKNOWN")
+            p_type = TYPE_NAME_MAP.get(raw_type, str(raw_type).upper())
+            
+            # Extract target object / IP / login
+            target_obj = proc.get("target") if isinstance(proc.get("target"), dict) else {}
+            target_ip = target_obj.get("ip") or proc.get("targetIp") or proc.get("ip") or "N/A"
+            target_login = target_obj.get("login") or proc.get("targetLogin") or proc.get("login") or ""
+            ram_cost = proc.get("ramCost") or proc.get("ram_cost") or proc.get("ram") or 0
+            
+            # Calculate remaining time from expiresAt ISO timestamp or seconds field
+            rem_sec = 0
+            expires_at = proc.get("expiresAt") or proc.get("expires_at") or proc.get("endTime")
+            if expires_at:
+                try:
+                    # Clean ISO format string (e.g. 2026-07-22T19:35:03.000Z)
+                    exp_clean = str(expires_at).replace("Z", "+00:00")
+                    exp_dt = datetime.fromisoformat(exp_clean).replace(tzinfo=None)
+                    diff = (exp_dt - now_dt).total_seconds()
+                    rem_sec = max(0, int(diff))
+                except Exception:
+                    rem_sec = proc.get("remainingSeconds") or proc.get("duration", 0)
+            else:
+                rem_sec = proc.get("remainingSeconds") or proc.get("duration", 0)
 
-        return len(processes)
+            # Format time remaining nicely (e.g. 1h 3m or 45s)
+            if rem_sec >= 3600:
+                time_str = f"{rem_sec // 3600}h {(rem_sec % 3600) // 60}m"
+            elif rem_sec >= 60:
+                time_str = f"{rem_sec // 60}m {rem_sec % 60}s"
+            else:
+                time_str = f"{rem_sec}s"
+
+            type_counts[p_type] = type_counts.get(p_type, 0) + 1
+            total_ram_used += int(ram_cost)
+
+            user_info = f" ({target_login})" if target_login else ""
+            Logger.info(f"  #{idx} [{p_type}] IP: {target_ip}{user_info} | RAM: {ram_cost} MB | Time Left: {time_str}")
+
+        # Log summary breakdown
+        summary_str = ", ".join([f"{k}: {v}" for k, v in type_counts.items()])
+        Logger.info(f"[Process Summary] Active Breakdown -> {summary_str} | Total Allocated RAM: {total_ram_used} MB")
+        Logger.info(f"=================================================")
+
+        return {
+            "total_count": len(processes),
+            "free_ram": free_ram,
+            "total_ram_used": total_ram_used,
+            "type_counts": type_counts
+        }
 
     async def start_firewall_bypass(self, target: dict) -> Optional[dict]:
         """
