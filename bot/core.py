@@ -15,22 +15,31 @@ class LyosGameBot:
         self.config = config
         self.account_index = account_index
         
-        # Build headers matching LyOS session structure
+        # Build full headers matching Google Chrome browser request (httpx handles decompression automatically)
         self.headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36",
             "Accept": "*/*",
-            "Accept-Language": "en-US,en;q=0.9",
+            "Accept-Language": "en,bn;q=0.9,en-US;q=0.8,fr;q=0.7,hi;q=0.6",
             "Origin": "https://lyos.fly.dev",
-            "Referer": "https://lyos.fly.dev/scan"
+            "Referer": "https://lyos.fly.dev/scan",
+            "Sec-Ch-Ua": '"NotA=Brand";v="8", "Chromium";v="150", "Google Chrome";v="150"',
+            "Sec-Ch-Ua-Mobile": "?0",
+            "Sec-Ch-Ua-Platform": '"Windows"',
+            "Sec-Fetch-Dest": "empty",
+            "Sec-Fetch-Mode": "cors",
+            "Sec-Fetch-Site": "same-origin"
         }
         
-        # Support both cookie session token and authorization header formats
-        if "token=" in self.init_data or "__Secure-next-auth" in self.init_data:
-            self.headers["Cookie"] = self.init_data
+        # Strip extraneous whitespace/quotes from session cookie
+        clean_cookie = self.init_data.strip().strip('"').strip("'")
+        
+        if "session-token=" in clean_cookie or "next-auth" in clean_cookie:
+            self.headers["Cookie"] = clean_cookie
         else:
-            self.headers["Authorization"] = f"Bearer {self.init_data}"
+            self.headers["Cookie"] = f"__Secure-next-auth.session-token={clean_cookie}"
+            self.headers["Authorization"] = f"Bearer {clean_cookie}"
 
-        self.client = httpx.AsyncClient(headers=self.headers, timeout=30.0)
+        self.client = httpx.AsyncClient(headers=self.headers, timeout=30.0, follow_redirects=True)
 
     async def close(self):
         await self.client.aclose()
@@ -88,21 +97,43 @@ class LyosGameBot:
 
         for scan_idx in range(1, max_scans + 1):
             try:
-                res = await self.client.post(f"{BASE_URL}/scan/random")
-                if res.status_code in (200, 201):
-                    raw_data = res.json().get("data", [])
-                    accounts = raw_data.get("accounts", []) if isinstance(raw_data, dict) else raw_data
+                res = await self.client.get(f"{BASE_URL}/scan")
+                
+                if res.status_code == 200:
+                    raw_data = res.json()
+                    
+                    # Parse different possible JSON response structures
+                    if isinstance(raw_data, list):
+                        accounts = raw_data
+                    elif isinstance(raw_data, dict):
+                        accounts = (
+                            raw_data.get("accounts")
+                            or raw_data.get("targets")
+                            or raw_data.get("data")
+                            or raw_data.get("results")
+                            or []
+                        )
+                        if isinstance(accounts, dict):
+                            accounts = accounts.get("accounts") or accounts.get("targets") or []
+                    else:
+                        accounts = []
 
-                    Logger.info(f"[Scan #{scan_idx}] Discovered {len(accounts)} random targets.")
+                    Logger.info(f"[Scan #{scan_idx}] HTTP 200 OK. Raw data keys: {list(raw_data.keys()) if isinstance(raw_data, dict) else 'list'}")
+                    Logger.info(f"[Scan #{scan_idx}] Discovered {len(accounts)} target(s).")
+
                     for acc in accounts:
+                        if not isinstance(acc, dict):
+                            continue
                         rep = acc.get("reputation", 0)
-                        firewall = acc.get("firewall_level", 0)
+                        firewall = acc.get("firewall_level") or acc.get("firewall") or 0
                         ip = acc.get("ip")
+                        target_id = acc.get("id") or acc.get("_id") or acc.get("targetId")
 
                         if ip and ip not in target_ips_seen:
                             target_ips_seen.add(ip)
                             if rep == 0 and firewall >= 80:
-                                Logger.success(f"[Matched Target] IP: {ip} | Rep: {rep} | Firewall: {firewall}")
+                                acc["targetId"] = target_id or ip
+                                Logger.success(f"[Matched Target] IP: {ip} (ID: {acc['targetId']}) | Rep: {rep} | Firewall: {firewall}")
                                 matched_targets.append(acc)
                 else:
                     Logger.warning(f"Random scan returned HTTP {res.status_code}")
@@ -115,6 +146,45 @@ class LyosGameBot:
         return matched_targets
 
     # ------------------------------------------------------------------
+    # Action Trigger Helper (Targeting /api/process/create)
+    # ------------------------------------------------------------------
+    async def _trigger_action(self, action_type: str, target_id: str, extra_params: Optional[dict] = None) -> Optional[dict]:
+        """POST action payload to the primary process creation endpoint: /api/process/create"""
+        url = f"{BASE_URL}/process/create"
+        
+        # Exact payload structure verified on live server:
+        # {"targetId": "...", "type": "BYPASS"}
+        type_enum_map = {
+            "bypass": "BYPASS",
+            "bank": "BANK_CRACK",
+            "miner": "UPLOAD_MINER",
+            "logs": "CLEAR_LOGS",
+            "siphon": "SIPHON"
+        }
+        
+        payload = {
+            "targetId": target_id,
+            "type": type_enum_map.get(action_type, action_type.upper())
+        }
+        
+        if extra_params:
+            payload.update(extra_params)
+
+        try:
+            res = await self.client.post(url, json=payload)
+            if res.status_code in (200, 201):
+                Logger.success(f"Action '{action_type}' created successfully on target {target_id}!")
+                data = res.json()
+                return data.get("data", {}) if isinstance(data, dict) else data
+            else:
+                Logger.warning(f"POST /api/process/create payload {payload} -> HTTP {res.status_code}: {res.text[:100]}")
+        except Exception as e:
+            Logger.error(f"Error triggering '{action_type}' on {target_id}: {e}")
+
+        Logger.error(f"Failed to create process '{action_type}' on {target_id}")
+        return None
+
+    # ------------------------------------------------------------------
     # Dynamic Miner Upload (Highest Level Fallback)
     # ------------------------------------------------------------------
     async def upload_highest_miner(self, target_ip: str, max_level: int = 378) -> Optional[dict]:
@@ -125,9 +195,8 @@ class LyosGameBot:
         current_level = max_level
         while current_level > 0:
             Logger.info(f"Attempting to upload Level {current_level} Miner to {target_ip}...")
-            payload = {"ip": target_ip, "miner_level": current_level}
-            result = await self._trigger_action("miner/upload", payload)
-            if result and result.get("success", True):
+            result = await self._trigger_action("miner", target_ip, {"minerLevel": current_level, "level": current_level})
+            if result:
                 Logger.success(f"Successfully uploaded Level {current_level} Miner to {target_ip}!")
                 return result
 
@@ -147,17 +216,19 @@ class LyosGameBot:
             res = await self.client.get(f"{BASE_URL}/jobs/active")
             if res.status_code == 200:
                 data = res.json().get("data", {})
-                return data.get("active_count", 0)
+                return data.get("active_count", 0) if isinstance(data, dict) else 0
         except Exception as e:
             Logger.error(f"Error fetching active jobs count: {e}")
         return 0
 
-    async def start_firewall_bypass(self, target_ip: str) -> Optional[dict]:
+    async def start_firewall_bypass(self, target: dict) -> Optional[dict]:
         """Triggers firewall bypass for a target and records job details."""
-        Logger.info(f"[Step A] Triggering Firewall Breach on IP: {target_ip}...")
-        job = await self._trigger_action("firewall/bypass", {"ip": target_ip})
+        target_id = target.get("targetId") or target.get("id") or target.get("ip")
+        target_ip = target.get("ip")
+        Logger.info(f"[Step A] Triggering Firewall Breach on IP: {target_ip} (ID: {target_id})...")
+        job = await self._trigger_action("bypass", target_id)
         if job:
-            Logger.success(f"[Step A] Bypass started on {target_ip}. Job ID: {job.get('job_id')}")
+            Logger.success(f"[Step A] Bypass started on {target_ip}.")
         return job
 
     async def process_bypassed_target(self, target_ip: str):
@@ -166,7 +237,7 @@ class LyosGameBot:
 
         # Step B: Bank Crack & Upload Highest Miner
         Logger.info(f"[Step B] Triggering Bank Crack & Uploading Highest Miner on {target_ip}...")
-        crack_job = await self._trigger_action("bank/crack", {"ip": target_ip})
+        crack_job = await self._trigger_action("bank", target_ip)
         miner_job = await self.upload_highest_miner(target_ip, max_level=378)
 
         max_wait = max(
@@ -182,18 +253,18 @@ class LyosGameBot:
 
         # Step C: Log Wiping
         Logger.info(f"[Step C] Clearing logs on {target_ip}...")
-        await self._trigger_action("logs/clear", {"ip": target_ip})
+        await self._trigger_action("logs", target_ip)
         await random_sleep(1, 2)
 
         # Step D: Fund Transfer
         if not bank_empty:
             Logger.info(f"[Step D] Transferring siphoned funds from {target_ip} to main account...")
-            await self._trigger_action("bank/siphon-transfer", {"ip": target_ip})
+            await self._trigger_action("siphon", target_ip)
             await random_sleep(1, 2)
 
         # Step E: Final Log Wiping
         Logger.info(f"[Step E] Final log wipe on {target_ip}...")
-        await self._trigger_action("logs/clear", {"ip": target_ip})
+        await self._trigger_action("logs", target_ip)
 
         Logger.success(f"=== Completed Post-Bypass Steps for IP: {target_ip} ===")
 
@@ -217,8 +288,9 @@ class LyosGameBot:
 
             for target in new_targets:
                 ip = target.get("ip")
+                target_id = target.get("targetId") or target.get("id") or ip
                 if ip and ip not in active_bypasses:
-                    job = await self.start_firewall_bypass(ip)
+                    job = await self.start_firewall_bypass(target)
                     if job:
                         active_bypasses[ip] = job
                         Logger.info(f"Active bypass jobs count now: {len(active_bypasses)}/{target_active_jobs}")
