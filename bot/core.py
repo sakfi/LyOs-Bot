@@ -3,7 +3,7 @@ import json
 import os
 import random
 from datetime import datetime, timedelta
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict, Union
 import httpx
 from bot.utils import Logger, random_sleep
 
@@ -610,40 +610,54 @@ class LyosGameBot:
             Logger.success(f"[Step A] Bypass started on {target_ip}.")
         return job
 
-    async def process_bypassed_target(self, target_ip: str):
+    async def process_bypassed_target(self, target_input: Union[str, dict]):
         """Executes Steps B through E once firewall bypass completes."""
-        Logger.info(f"=== Processing Post-Bypass Steps for IP: {target_ip} ===")
+        if isinstance(target_input, dict):
+            target_ip = target_input.get("ip") or target_input.get("targetIp") or target_input.get("target_ip")
+            target_id = target_input.get("targetId") or target_input.get("id") or target_input.get("_id") or target_ip
+        else:
+            target_ip = str(target_input)
+            target_id = str(target_input)
+
+        if not target_id or not target_ip:
+            Logger.warning("[Post-Bypass] Invalid target input provided.")
+            return
+
+        Logger.info(f"=== Processing Post-Bypass Steps for IP: {target_ip} (ID: {target_id}) ===")
 
         # Step B: Bank Crack & Upload Highest Miner
         Logger.info(f"[Step B] Triggering Bank Crack & Uploading Highest Miner on {target_ip}...")
-        crack_job = await self._trigger_action("bank", target_ip)
+        crack_job = await self._trigger_action("bank", target_id)
         miner_job = await self.upload_highest_miner(target_ip, max_level=378)
 
         max_wait = max(
-            crack_job.get("duration_seconds", 45) if crack_job else 45,
-            miner_job.get("duration_seconds", 45) if miner_job else 45
+            crack_job.get("duration_seconds", 45) if isinstance(crack_job, dict) and crack_job else 45,
+            miner_job.get("duration_seconds", 45) if isinstance(miner_job, dict) and miner_job else 45
         )
         Logger.info(f"[Step B] Bank crack & miner deployment active. Waiting {max_wait}s...")
         await asyncio.sleep(max_wait + 1)
 
-        bank_empty = crack_job.get("bank_empty", False) if crack_job else False
+        bank_empty = crack_job.get("bank_empty", False) if isinstance(crack_job, dict) and crack_job else False
         if bank_empty:
             Logger.warning(f"[Step B] Bank {target_ip} is empty! Will retry in 2 hours.")
 
         # Step C: Log Wiping
         Logger.info(f"[Step C] Clearing logs on {target_ip}...")
-        await self._trigger_action("logs", target_ip)
+        await self._trigger_action("logs", target_id)
         await random_sleep(1, 2)
 
-        # Step D: Fund Transfer
+        # Step D: Fund Transfer (Siphon to Wallet)
         if not bank_empty:
-            Logger.info(f"[Step D] Transferring siphoned funds from {target_ip} to main account...")
-            await self._trigger_action("siphon", target_ip)
+            Logger.info(f"[Step D] Siphoning funds from {target_ip} (ID: {target_id}) to main wallet...")
+            siphon_res = await self._trigger_action("siphon", target_id)
+            if not siphon_res:
+                # Fallback attempt using target_ip if target_id differed
+                await self._trigger_action("siphon", target_ip)
             await random_sleep(1, 2)
 
         # Step E: Final Log Wiping
         Logger.info(f"[Step E] Final log wipe on {target_ip}...")
-        await self._trigger_action("logs", target_ip)
+        await self._trigger_action("logs", target_id)
 
         Logger.success(f"=== Completed Post-Bypass Steps for IP: {target_ip} ===")
 
@@ -662,14 +676,22 @@ class LyosGameBot:
             Logger.info(f"[Siphon Sweep] Found {len(bypassed_list)} bypassed target(s). Triggering fund siphons...")
             for idx, target in enumerate(bypassed_list, start=1):
                 if not isinstance(target, dict):
-                    continue
-                target_ip = target.get("ip") or target.get("targetIp") or target.get("target_ip")
-                if target_ip:
-                    Logger.info(f"[Siphon #{idx}/{len(bypassed_list)}] Siphoning cracked funds from IP: {target_ip} -> Wallet...")
-                    await self._trigger_action("siphon", target_ip)
+                    target_obj = {"ip": str(target), "targetId": str(target)}
+                else:
+                    target_obj = target
+                
+                target_ip = target_obj.get("ip") or target_obj.get("targetIp") or target_obj.get("target_ip")
+                target_id = target_obj.get("targetId") or target_obj.get("id") or target_obj.get("_id") or target_ip
+
+                if target_id and target_ip:
+                    Logger.info(f"[Siphon #{idx}/{len(bypassed_list)}] Siphoning cracked funds from IP: {target_ip} (ID: {target_id}) -> Wallet...")
+                    res = await self._trigger_action("siphon", target_id)
+                    if not res and target_id != target_ip:
+                        await self._trigger_action("siphon", target_ip)
                     await random_sleep(0.5, 1.0)
+                    
                     # Wipe logs post-siphon
-                    await self._trigger_action("logs", target_ip)
+                    await self._trigger_action("logs", target_id)
                     await random_sleep(0.5, 1.0)
 
         # 2. Deposit all siphoned wallet money into Bank
