@@ -365,16 +365,14 @@ class LyosGameBot:
             "bypass": 0,
             "bank": 1,
             "miner": 2,
-            "logs": 3,
-            "siphon": 4
+            "logs": 3
         }
         
         num_type = type_numeric_map.get(action_type, 0)
         
         payload = {
             "targetId": target_id,
-            "type": num_type,
-            "action": action_type
+            "type": num_type
         }
         if extra_params:
             payload.update(extra_params)
@@ -408,46 +406,40 @@ class LyosGameBot:
     async def siphon_target_funds(self, target_id: str, target_ip: str) -> bool:
         """
         Universal Siphon Engine:
-        Primary Endpoint: POST /api/hack/steal with {"targetId": target_id} or {"targetId": target_id, "amount": "max"}
-        Fallback Endpoints: /api/process/create (Type 4), /api/bank/withdraw, etc.
+        Targets direct stealing endpoints:
+        - POST /api/hack/steal
+        - POST /api/targets/hack/steal
+        - POST /api/target/steal
+        - POST /api/bank/withdraw
         """
         Logger.info(f"[Siphon Engine] Initiating fund siphon for Target: {target_ip} (ID: {target_id})...")
 
-        # ------------------------------------------------------------------
-        # Primary Endpoint (Exact match from Network Trace): POST /api/hack/steal
-        # ------------------------------------------------------------------
-        steal_url = f"{BASE_URL}/hack/steal"
-        steal_payloads = [
-            {"targetId": target_id},
-            {"targetId": target_id, "amount": "max"},
-            {"targetId": target_id, "amount": "all"},
-            {"target": target_id},
-            {"ip": target_ip, "targetId": target_id}
+        # Candidate endpoints matrix for Steal / Siphon
+        steal_candidates = [
+            (f"{BASE_URL}/hack/steal", {"targetId": target_id}),
+            (f"{BASE_URL}/hack/steal", {"targetId": target_id, "amount": "max"}),
+            (f"{BASE_URL}/targets/hack/steal", {"targetId": target_id}),
+            (f"{BASE_URL}/target/steal", {"targetId": target_id}),
+            (f"{BASE_URL}/bank/withdraw", {"targetId": target_id, "amount": "all"}),
+            (f"{BASE_URL}/bank/siphon", {"targetId": target_id}),
+            (f"{BASE_URL}/hack/steal", {"target": target_id}),
+            (f"{BASE_URL}/hack/steal", {"ip": target_ip})
         ]
 
-        for p in steal_payloads:
+        for ep_url, p in steal_candidates:
             try:
-                res = await self.client.post(steal_url, json=p)
+                res = await self.client.post(ep_url, json=p)
                 if res.status_code in (200, 201):
-                    Logger.success(f"[Siphon Engine] Successfully siphoned funds via POST /api/hack/steal for Target {target_ip}!")
+                    Logger.success(f"[Siphon Engine] Successfully siphoned/stole funds via {ep_url} for Target {target_ip}!")
                     return True
-                elif res.status_code == 400 and ("empty" in res.text.lower() or "0" in res.text):
+                elif res.status_code == 400 and ("empty" in res.text.lower() or "0" in res.text or "no funds" in res.text.lower()):
                     Logger.info(f"[Siphon Engine] Target bank {target_ip} is currently empty.")
                     return True
             except Exception as e:
-                Logger.warning(f"[Siphon Engine] Error posting to /api/hack/steal: {e}")
+                Logger.warning(f"[Siphon Engine] Error calling {ep_url}: {e}")
 
-        # ------------------------------------------------------------------
-        # Fallback 1: Process Creation /api/process/create (Type 4)
-        # ------------------------------------------------------------------
-        res = await self._trigger_action("siphon", target_id)
-        if res:
-            return True
-
-        if target_id != target_ip:
-            res_ip = await self._trigger_action("siphon", target_ip)
-            if res_ip:
-                return True
+        Logger.warning(f"[Siphon Engine] All primary & fallback siphon attempts completed for target {target_ip}.")
+        return False
 
         # Fallback Endpoints Matrix
         siphon_endpoints = [
