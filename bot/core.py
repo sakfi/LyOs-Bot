@@ -118,23 +118,34 @@ class LyosGameBot:
                     else:
                         accounts = []
 
-                    Logger.info(f"[Scan #{scan_idx}] HTTP 200 OK. Raw data keys: {list(raw_data.keys()) if isinstance(raw_data, dict) else 'list'}")
-                    Logger.info(f"[Scan #{scan_idx}] Discovered {len(accounts)} target(s).")
+                    Logger.info(f"[Scan #{scan_idx}] Discovered {len(accounts)} random targets.")
 
                     for acc in accounts:
                         if not isinstance(acc, dict):
                             continue
-                        rep = acc.get("reputation", 0)
-                        firewall = acc.get("firewall_level") or acc.get("firewall") or 0
-                        ip = acc.get("ip")
-                        target_id = acc.get("id") or acc.get("_id") or acc.get("targetId")
+                        
+                        # Extract Reputation ('rep' in LyOS schema)
+                        rep = acc.get("rep")
+                        if rep is None:
+                            rep = acc.get("reputation", 0)
+                        
+                        # Extract Firewall Level ('firewall' in LyOS schema)
+                        firewall = acc.get("firewall")
+                        if firewall is None:
+                            firewall = acc.get("firewall_level", 0)
 
+                        ip = acc.get("ip")
+                        target_id = acc.get("_id") or acc.get("id") or acc.get("targetId") or acc.get("ip")
+
+                        # Filter strictly for: Reputation == 0 AND Firewall Level >= 100
                         if ip and ip not in target_ips_seen:
                             target_ips_seen.add(ip)
-                            if rep == 0 and firewall >= 80:
-                                acc["targetId"] = target_id or ip
+                            if int(rep) == 0 and int(firewall) >= 100:
+                                acc["targetId"] = target_id
                                 Logger.success(f"[Matched Target] IP: {ip} (ID: {acc['targetId']}) | Rep: {rep} | Firewall: {firewall}")
                                 matched_targets.append(acc)
+                            else:
+                                Logger.info(f"[Skipped Non-Matching Target] IP: {ip} | Rep: {rep} | Firewall: {firewall} (Requires: Rep==0 & Firewall>=100)")
                 else:
                     Logger.warning(f"Random scan returned HTTP {res.status_code}")
             except Exception as e:
