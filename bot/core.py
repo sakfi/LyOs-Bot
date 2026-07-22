@@ -178,8 +178,7 @@ class LyosGameBot:
     async def get_bypassed_targets(self) -> List[Dict]:
         """Fetch ALL bypassed target accounts from server API & Next.js RSC hack page."""
         endpoints = [
-            f"{BASE_URL}/targets?bypassed=true&limit=100",
-            f"{BASE_URL}/targets?limit=100",
+            f"{BASE_URL}/targets",
             f"{BASE_URL}/targets/bypassed",
             f"{BASE_URL}/processes",
             "https://lyos.fly.dev/apps/hack"
@@ -217,26 +216,17 @@ class LyosGameBot:
                             if not isinstance(item, dict):
                                 continue
                             
-                            is_bypassed = (
-                                item.get("bypassed") is True or
-                                item.get("status") in ("bypassed", "active", "completed") or
-                                item.get("isBypassed") is True or
-                                item.get("type") in (0, "bypass") or
-                                item.get("bankStatus") == "Cracked" or
-                                "ip" in item or "targetIp" in item
-                            )
-                            
                             ip = item.get("ip") or item.get("targetIp") or item.get("target_ip")
                             target_id = item.get("_id") or item.get("id") or item.get("targetId") or ip
-                            if ip and ip not in seen_ips and is_bypassed:
+                            if ip and ip not in seen_ips:
                                 seen_ips.add(ip)
                                 bypassed_targets.append({"ip": ip, "targetId": target_id, "bypassed": True})
                     except Exception:
                         pass
 
-                    # 2. Always extract JSON-like target blocks from text/RSC stream
+                    # 2. Extract targets from text/RSC stream
                     import re
-                    # Find all 10.x.x.x IPs and 24-char MongoDB Object IDs
+                    # Extract pairs of IP addresses (10.x.x.x) and hex IDs
                     ip_matches = re.findall(r'\b10\.\d{1,3}\.\d{1,3}\.\d{1,3}\b', text_content)
                     hex_ids = re.findall(r'[a-f0-9]{24}', text_content)
                     valid_ids = list(dict.fromkeys(hex_ids))
@@ -251,6 +241,39 @@ class LyosGameBot:
                 continue
 
         return bypassed_targets
+
+    async def siphon_target_funds(self, target_id: str, target_ip: str) -> bool:
+        """
+        Universal Siphon Engine:
+        Executes candidate steal endpoints and logs detailed HTTP response diagnostic data.
+        """
+        Logger.info(f"[Siphon Engine] Initiating fund siphon for Target: {target_ip} (ID: {target_id})...")
+
+        # Candidate endpoints matrix for Steal / Siphon
+        steal_candidates = [
+            (f"{BASE_URL}/hack/steal", {"targetId": target_id}),
+            (f"{BASE_URL}/hack/steal", {"targetId": target_id, "amount": "max"}),
+            (f"{BASE_URL}/targets/hack/steal", {"targetId": target_id}),
+            (f"{BASE_URL}/target/steal", {"targetId": target_id}),
+            (f"{BASE_URL}/bank/withdraw", {"targetId": target_id, "amount": "all"}),
+            (f"{BASE_URL}/bank/siphon", {"targetId": target_id}),
+            (f"{BASE_URL}/hack/steal", {"target": target_id}),
+            (f"{BASE_URL}/hack/steal", {"ip": target_ip})
+        ]
+
+        for ep_url, p in steal_candidates:
+            try:
+                res = await self.client.post(ep_url, json=p)
+                if res.status_code in (200, 201):
+                    Logger.success(f"[Siphon Engine] Successfully siphoned/stole funds via {ep_url} for Target {target_ip}!")
+                    return True
+                else:
+                    Logger.info(f"[Siphon Diagnostic] {ep_url} {p} -> HTTP {res.status_code}: {res.text[:120]}")
+            except Exception as e:
+                Logger.warning(f"[Siphon Engine] Exception calling {ep_url}: {e}")
+
+        Logger.warning(f"[Siphon Engine] All candidate siphon attempts completed for target {target_ip}.")
+        return False
 
     async def focus_bypassed_targets_crack_and_miner(self, threshold: int = 15) -> bool:
         """
