@@ -299,30 +299,39 @@ class LyosGameBot:
     # ------------------------------------------------------------------
     async def get_system_status(self) -> dict:
         """
-        Fetches system RAM info (total/free/allocated) and ALL active running processes across all types.
+        Fetches system RAM info (total/free/allocated) from /api/me and ALL active running processes across all types.
         """
         status = {"total_ram": 0, "free_ram": 0, "allocated_ram": 0, "active_processes": []}
         try:
-            # 1. Fetch user memory info from /api/me or /api/scan
+            # 1. Fetch exact account hardware specs from GET /api/me
             user_res = await self.client.get(f"{BASE_URL}/me")
             if user_res.status_code == 200:
                 u_data = user_res.json()
                 if isinstance(u_data, dict):
-                    user_obj = u_data.get("user") or u_data.get("player") or u_data
-                    status["free_ram"] = user_obj.get("freeRam") or user_obj.get("free_ram") or status["free_ram"]
-                    status["total_ram"] = user_obj.get("totalRam") or user_obj.get("maxRam") or user_obj.get("ram") or status["total_ram"]
-                    status["allocated_ram"] = user_obj.get("allocatedRam") or user_obj.get("usedRam") or status["allocated_ram"]
+                    # Check root dictionary or nested 'user' / 'player' / 'account' dictionary
+                    u_obj = u_data.get("user") or u_data.get("player") or u_data.get("account") or u_data
+                    
+                    total = u_obj.get("totalRam") or u_obj.get("maxRam") or u_obj.get("ram") or u_obj.get("ramTotal")
+                    used = u_obj.get("usedRam") or u_obj.get("allocatedRam") or u_obj.get("ramUsed")
+                    free = u_obj.get("freeRam") or u_obj.get("free_ram")
+                    
+                    if total is not None:
+                        status["total_ram"] = int(total)
+                    if used is not None:
+                        status["allocated_ram"] = int(used)
+                    if free is not None:
+                        status["free_ram"] = int(free)
 
-            scan_res = await self.client.get(f"{BASE_URL}/scan")
-            if scan_res.status_code == 200:
-                raw = scan_res.json()
-                if isinstance(raw, dict):
-                    if not status["free_ram"]:
-                        status["free_ram"] = raw.get("freeRam") or raw.get("free_ram") or 0
-                    if not status["total_ram"]:
-                        status["total_ram"] = raw.get("totalRam") or raw.get("maxRam") or 0
-                    if not status["allocated_ram"]:
-                        status["allocated_ram"] = raw.get("allocatedRam") or raw.get("usedRam") or 0
+            # Fallback to /api/scan if /api/me missing freeRam
+            if not status["free_ram"] or not status["total_ram"]:
+                scan_res = await self.client.get(f"{BASE_URL}/scan")
+                if scan_res.status_code == 200:
+                    raw = scan_res.json()
+                    if isinstance(raw, dict):
+                        if not status["free_ram"]:
+                            status["free_ram"] = raw.get("freeRam", 0)
+                        if not status["total_ram"]:
+                            status["total_ram"] = raw.get("totalRam", 0)
 
             # 2. Fetch active processes list from /api/processes endpoint
             proc_res = await self.client.get(f"{BASE_URL}/processes")
@@ -346,9 +355,6 @@ class LyosGameBot:
         (Bypass, Crack, Upload, Download, Decompile, Sabotage).
         """
         sys_status = await self.get_system_status()
-        free_ram = sys_status.get("free_ram", 0)
-        total_ram = sys_status.get("total_ram", 0)
-        allocated_ram = sys_status.get("allocated_ram", 0)
         processes = sys_status.get("active_processes", [])
         
         # Numeric type map to human readable names
@@ -371,43 +377,26 @@ class LyosGameBot:
         total_ram_used = 0
         now_dt = datetime.now()
 
-        # Calculate calculated allocated RAM if allocated_ram from API is 0
+        # Pre-process process RAM costs (from ram, ramCost, ramUsed, or lvl * 16 / loadMultiplier)
+        proc_details = []
         for proc in processes:
-            if isinstance(proc, dict):
-                r_cost = proc.get("ramCost") or proc.get("ram_cost") or proc.get("ram") or proc.get("mb") or 0
-                total_ram_used += int(r_cost)
-
-        display_allocated_ram = allocated_ram if allocated_ram > 0 else total_ram_used
-        display_total_ram = total_ram if total_ram > 0 else (display_allocated_ram + free_ram)
-
-        Logger.info(f"================ SYSTEM MONITOR ================")
-        Logger.info(f"Available Total RAM: {display_total_ram} MB")
-        Logger.info(f"Available Allocated RAM: {display_allocated_ram} MB")
-        Logger.info(f"Available Free RAM: {free_ram} MB")
-
-        if not processes:
-            Logger.info("[Process Monitor] No active running processes found.")
-            Logger.info(f"=================================================")
-            return {"total_count": 0, "free_ram": free_ram, "type_counts": {}}
-
-        Logger.info(f"[Process Monitor] Found {len(processes)} active process(es) running:")
-        for idx, proc in enumerate(processes, start=1):
             if not isinstance(proc, dict):
                 continue
                 
             raw_type = proc.get("type") if proc.get("type") is not None else proc.get("processType", "UNKNOWN")
             p_type = TYPE_NAME_MAP.get(raw_type, str(raw_type).upper())
             
-            # Extract target object / IP / login
             target_obj = proc.get("target") if isinstance(proc.get("target"), dict) else {}
             target_ip = target_obj.get("ip") or proc.get("targetIp") or proc.get("ip") or proc.get("target_ip") or "N/A"
             target_login = target_obj.get("login") or proc.get("targetLogin") or proc.get("login") or ""
             
-            # Extract RAM cost (from ram, ramCost, mb, or target bypassRamCost)
+            # Extract RAM cost from all possible server key aliases
             ram_cost = (
                 proc.get("ramCost")
                 or proc.get("ram_cost")
                 or proc.get("ram")
+                or proc.get("ramUsed")
+                or proc.get("usedRam")
                 or proc.get("ramUsage")
                 or proc.get("mb")
                 or target_obj.get("bypassRamCost")
@@ -415,7 +404,15 @@ class LyosGameBot:
                 or 0
             )
 
-            # Calculate remaining time from timeLeft / remainingSeconds / endTime
+            # If ram_cost is 0, calculate dynamically from tool level (lvl * 16 MB)
+            if not ram_cost or ram_cost == 0:
+                lvl = proc.get("lvl") or proc.get("level") or target_obj.get("firewall") or 1
+                ram_cost = int(lvl) * 16
+
+            ram_cost = int(ram_cost)
+            total_ram_used += ram_cost
+
+            # Calculate remaining time from timeLeft or endTime
             rem_sec = 0
             time_left = proc.get("timeLeft") or proc.get("time_left") or proc.get("remainingSeconds")
             
@@ -425,12 +422,7 @@ class LyosGameBot:
                 except Exception:
                     rem_sec = 0
             else:
-                expires_at = (
-                    proc.get("expiresAt")
-                    or proc.get("expires_at")
-                    or proc.get("endTime")
-                    or proc.get("finishAt")
-                )
+                expires_at = proc.get("expiresAt") or proc.get("expires_at") or proc.get("endTime") or proc.get("finishAt")
                 if expires_at:
                     try:
                         if isinstance(expires_at, (int, float)):
@@ -443,6 +435,45 @@ class LyosGameBot:
                     except Exception:
                         rem_sec = proc.get("duration") or 0
 
+            proc_details.append({
+                "p_type": p_type,
+                "target_ip": target_ip,
+                "target_login": target_login,
+                "ram_cost": ram_cost,
+                "rem_sec": rem_sec
+            })
+
+        # Calculate exact total, allocated, and free RAM values
+        total_ram = sys_status.get("total_ram", 0)
+        allocated_ram = sys_status.get("allocated_ram", 0)
+        free_ram = sys_status.get("free_ram", 0)
+
+        if allocated_ram == 0:
+            allocated_ram = total_ram_used
+
+        if total_ram == 0:
+            total_ram = allocated_ram + free_ram
+        elif free_ram == 0 or (allocated_ram + free_ram != total_ram):
+            free_ram = max(0, total_ram - allocated_ram)
+
+        Logger.info(f"================ SYSTEM MONITOR ================")
+        Logger.info(f"Available Total RAM: {total_ram} MB")
+        Logger.info(f"Available Allocated RAM: {allocated_ram} MB")
+        Logger.info(f"Available Free RAM: {free_ram} MB")
+
+        if not proc_details:
+            Logger.info("[Process Monitor] No active running processes found.")
+            Logger.info(f"=================================================")
+            return {"total_count": 0, "free_ram": free_ram, "allocated_ram": allocated_ram, "total_ram": total_ram, "type_counts": {}}
+
+        Logger.info(f"[Process Monitor] Found {len(proc_details)} active process(es) running:")
+        for idx, pd in enumerate(proc_details, start=1):
+            p_type = pd["p_type"]
+            target_ip = pd["target_ip"]
+            target_login = pd["target_login"]
+            ram_cost = pd["ram_cost"]
+            rem_sec = pd["rem_sec"]
+
             # Format time remaining nicely (e.g. 1h 3m or 45s)
             if rem_sec >= 3600:
                 time_str = f"{rem_sec // 3600}h {(rem_sec % 3600) // 60}m"
@@ -452,20 +483,19 @@ class LyosGameBot:
                 time_str = f"{rem_sec}s"
 
             type_counts[p_type] = type_counts.get(p_type, 0) + 1
-
             user_info = f" ({target_login})" if target_login else ""
             Logger.info(f"  #{idx} [{p_type}] IP: {target_ip}{user_info} | RAM: {ram_cost} MB | Time Left: {time_str}")
 
         # Log summary breakdown
         summary_str = ", ".join([f"{k}: {v}" for k, v in type_counts.items()])
-        Logger.info(f"[Process Summary] Active Breakdown -> {summary_str} | Total Allocated RAM: {display_allocated_ram} MB")
+        Logger.info(f"[Process Summary] Active Breakdown -> {summary_str} | Total Allocated RAM: {allocated_ram} MB")
         Logger.info(f"=================================================")
 
         return {
-            "total_count": len(processes),
+            "total_count": len(proc_details),
             "free_ram": free_ram,
-            "allocated_ram": display_allocated_ram,
-            "total_ram": display_total_ram,
+            "allocated_ram": allocated_ram,
+            "total_ram": total_ram,
             "type_counts": type_counts
         }
 
