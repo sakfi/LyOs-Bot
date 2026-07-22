@@ -89,14 +89,26 @@ class LyosGameBot:
             Logger.info(f"[Acc #{self.account_index}] Wallet check complete: No funds in wallet (0).")
             return True
 
+        # LyOS stores currency in cents (e.g., 171000 = $1710.00). Convert if stored in cents representation.
+        if wallet_balance >= 100 and wallet_balance % 100 == 0 and wallet_balance > 10000:
+            actual_amount = wallet_balance / 100.0
+        else:
+            actual_amount = wallet_balance
+
+        amount_to_deposit = int(actual_amount) if actual_amount.is_integer() else round(actual_amount, 2)
+
         try:
-            amount_to_deposit = int(wallet_balance) if wallet_balance.is_integer() else wallet_balance
             Logger.info(f"[Acc #{self.account_index}] Wallet check: Found {amount_to_deposit} in wallet. Depositing -> Bank...")
             res = await self.client.post(f"{BASE_URL}/bank/deposit", json={"amount": amount_to_deposit})
             if res.status_code in (200, 201):
                 Logger.success(f"[Acc #{self.account_index}] Successfully deposited {amount_to_deposit} from Wallet to Bank!")
                 return True
             else:
+                # If server rejects whole units, attempt raw wallet_balance
+                res_fallback = await self.client.post(f"{BASE_URL}/bank/deposit", json={"amount": int(wallet_balance)})
+                if res_fallback.status_code in (200, 201):
+                    Logger.success(f"[Acc #{self.account_index}] Successfully deposited {wallet_balance} from Wallet to Bank!")
+                    return True
                 Logger.warning(f"[Acc #{self.account_index}] Bank deposit failed: HTTP {res.status_code} - {res.text}")
         except Exception as e:
             Logger.error(f"[Acc #{self.account_index}] Bank deposit error: {e}")
