@@ -176,12 +176,12 @@ class LyosGameBot:
     # Target Discovery & Bypassed Management
     # ------------------------------------------------------------------
     async def get_bypassed_targets(self) -> List[Dict]:
-        """Fetch list of already bypassed target accounts from server API across multiple candidate endpoints."""
+        """Fetch list of already bypassed target accounts from server API & Next.js RSC hack page."""
         endpoints = [
             f"{BASE_URL}/targets/bypassed",
             f"{BASE_URL}/targets",
             f"{BASE_URL}/processes",
-            f"{BASE_URL}/user/bypassed"
+            "https://lyos.fly.dev/apps/hack"
         ]
         
         bypassed_targets = []
@@ -189,35 +189,54 @@ class LyosGameBot:
 
         for ep in endpoints:
             try:
-                res = await self.client.get(ep)
+                # Send Next.js RSC header for Next.js App Router compatibility
+                req_headers = self.headers.copy()
+                if "apps/hack" in ep:
+                    req_headers["RSC"] = "1"
+                    req_headers["Accept"] = "*/*"
+
+                res = await self.client.get(ep, headers=req_headers)
                 if res.status_code == 200:
-                    raw = res.json()
-                    candidates = []
-                    if isinstance(raw, list):
-                        candidates = raw
-                    elif isinstance(raw, dict):
-                        candidates = (
-                            raw.get("targets") or raw.get("bypassed") or raw.get("data") or
-                            raw.get("bypassedTargets") or raw.get("processes") or raw.get("list") or []
-                        )
+                    text_content = res.text
                     
-                    for item in candidates:
-                        if not isinstance(item, dict):
-                            continue
+                    # Try standard JSON parsing
+                    try:
+                        raw = res.json()
+                        candidates = []
+                        if isinstance(raw, list):
+                            candidates = raw
+                        elif isinstance(raw, dict):
+                            candidates = (
+                                raw.get("targets") or raw.get("bypassed") or raw.get("data") or
+                                raw.get("bypassedTargets") or raw.get("processes") or raw.get("list") or []
+                            )
                         
-                        # Filter for bypassed / active targets
-                        is_bypassed = (
-                            item.get("bypassed") is True or
-                            item.get("status") in ("bypassed", "active", "completed") or
-                            item.get("isBypassed") is True or
-                            item.get("type") in (0, "bypass") or
-                            "ip" in item or "targetIp" in item
-                        )
-                        
-                        ip = item.get("ip") or item.get("targetIp") or item.get("target_ip")
-                        if ip and ip not in seen_ips and is_bypassed:
-                            seen_ips.add(ip)
-                            bypassed_targets.append(item)
+                        for item in candidates:
+                            if not isinstance(item, dict):
+                                continue
+                            
+                            is_bypassed = (
+                                item.get("bypassed") is True or
+                                item.get("status") in ("bypassed", "active", "completed") or
+                                item.get("isBypassed") is True or
+                                item.get("type") in (0, "bypass") or
+                                item.get("bankStatus") == "Cracked" or
+                                "ip" in item or "targetIp" in item
+                            )
+                            
+                            ip = item.get("ip") or item.get("targetIp") or item.get("target_ip")
+                            if ip and ip not in seen_ips and is_bypassed:
+                                seen_ips.add(ip)
+                                bypassed_targets.append(item)
+                    except Exception:
+                        # Parse Next.js RSC payload stream for target IPs (e.g. 10.x.x.x)
+                        import re
+                        ip_matches = re.findall(r'(\b10\.\d{1,3}\.\d{1,3}\.\d{1,3}\b)', text_content)
+                        for found_ip in ip_matches:
+                            if found_ip not in seen_ips:
+                                seen_ips.add(found_ip)
+                                bypassed_targets.append({"ip": found_ip, "targetId": found_ip, "bypassed": True})
+
             except Exception:
                 continue
 
