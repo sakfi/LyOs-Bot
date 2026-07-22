@@ -427,28 +427,32 @@ class LyosGameBot:
 
         return None
 
-    async def siphon_target_funds(self, target_id: str, target_ip: str) -> bool:
+    async def siphon_target_funds(self, target_id: str, target_ip: str, amount: Optional[float] = None) -> bool:
         """
         Universal Siphon Engine:
-        Targets direct stealing endpoints:
-        - POST /api/hack/steal
-        - POST /api/targets/hack/steal
-        - POST /api/target/steal
-        - POST /api/bank/withdraw
+        Sends Steal to Wallet requests with targetId and numerical/string amount parameters.
         """
         Logger.info(f"[Siphon Engine] Initiating fund siphon for Target: {target_ip} (ID: {target_id})...")
 
-        # Candidate endpoints matrix for Steal / Siphon
-        steal_candidates = [
+        # Numerical amount options matching input field on Steal to Wallet card
+        steal_amounts = [amount, 99999999, 100000, "max", "all"] if amount else [99999999, 100000, "max", "all"]
+
+        steal_candidates = []
+        for amt in steal_amounts:
+            steal_candidates.extend([
+                (f"{BASE_URL}/hack/steal", {"targetId": target_id, "amount": amt}),
+                (f"{BASE_URL}/hack/steal", {"id": target_id, "amount": amt}),
+                (f"{BASE_URL}/targets/hack/steal", {"targetId": target_id, "amount": amt}),
+                (f"{BASE_URL}/bank/withdraw", {"targetId": target_id, "amount": amt}),
+                (f"{BASE_URL}/target/steal", {"targetId": target_id, "amount": amt}),
+            ])
+        
+        # Additional fallback formats
+        steal_candidates.extend([
             (f"{BASE_URL}/hack/steal", {"targetId": target_id}),
-            (f"{BASE_URL}/hack/steal", {"targetId": target_id, "amount": "max"}),
-            (f"{BASE_URL}/targets/hack/steal", {"targetId": target_id}),
-            (f"{BASE_URL}/target/steal", {"targetId": target_id}),
-            (f"{BASE_URL}/bank/withdraw", {"targetId": target_id, "amount": "all"}),
-            (f"{BASE_URL}/bank/siphon", {"targetId": target_id}),
-            (f"{BASE_URL}/hack/steal", {"target": target_id}),
-            (f"{BASE_URL}/hack/steal", {"ip": target_ip})
-        ]
+            (f"{BASE_URL}/hack/steal", {"ip": target_ip, "amount": 99999999}),
+            (f"{BASE_URL}/bank/siphon", {"targetId": target_id, "amount": 99999999})
+        ])
 
         for ep_url, p in steal_candidates:
             try:
