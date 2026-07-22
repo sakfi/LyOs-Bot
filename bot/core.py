@@ -293,7 +293,7 @@ class LyosGameBot:
         return matched_targets
 
     # ------------------------------------------------------------------
-    # Action Trigger Helper (Targeting /api/process/create)
+    # Action Trigger Helper & Multi-Endpoint Siphon Engine
     # ------------------------------------------------------------------
     async def _trigger_action(self, action_type: str, target_id: str, extra_params: Optional[dict] = None) -> Optional[dict]:
         """POST action payload to the primary process creation endpoint: /api/process/create"""
@@ -311,7 +311,8 @@ class LyosGameBot:
         
         payload = {
             "targetId": target_id,
-            "type": num_type
+            "type": num_type,
+            "action": action_type
         }
         if extra_params:
             payload.update(extra_params)
@@ -341,6 +342,50 @@ class LyosGameBot:
                 await asyncio.sleep(1.5)
 
         return None
+
+    async def siphon_target_funds(self, target_id: str, target_ip: str) -> bool:
+        """
+        Universal Siphon Engine:
+        Tries primary process creation (/api/process/create type 4) and fallback direct endpoints:
+        - POST /api/bank/siphon
+        - POST /api/siphon
+        - POST /api/target/siphon
+        Supports both targetId and target_ip payloads.
+        """
+        Logger.info(f"[Siphon Engine] Initiating fund siphon for Target: {target_ip} (ID: {target_id})...")
+
+        # Endpoint 1: Primary /api/process/create (Type 4)
+        res = await self._trigger_action("siphon", target_id)
+        if res:
+            return True
+
+        # Fallback 1.1: Try IP on /api/process/create
+        if target_id != target_ip:
+            res_ip = await self._trigger_action("siphon", target_ip)
+            if res_ip:
+                return True
+
+        # Fallback Endpoints Matrix
+        siphon_endpoints = [
+            (f"{BASE_URL}/bank/siphon", {"targetId": target_id, "ip": target_ip}),
+            (f"{BASE_URL}/bank/siphon", {"target": target_id, "ip": target_ip}),
+            (f"{BASE_URL}/siphon", {"targetId": target_id, "ip": target_ip}),
+            (f"{BASE_URL}/target/siphon", {"targetId": target_id, "ip": target_ip, "action": "siphon"}),
+            (f"{BASE_URL}/process/create", {"targetId": target_id, "type": "siphon", "action": "siphon"}),
+            (f"{BASE_URL}/process/create", {"targetId": target_ip, "type": 4})
+        ]
+
+        for ep_url, ep_payload in siphon_endpoints:
+            try:
+                r = await self.client.post(ep_url, json=ep_payload)
+                if r.status_code in (200, 201):
+                    Logger.success(f"[Siphon Engine] Siphon successful via {ep_url}!")
+                    return True
+            except Exception:
+                continue
+
+        Logger.warning(f"[Siphon Engine] Primary and fallback siphon endpoints attempted for target {target_ip}.")
+        return False
 
     # ------------------------------------------------------------------
     # Dynamic Miner Upload (Highest Level Fallback)
@@ -662,10 +707,7 @@ class LyosGameBot:
         # Step D: Fund Transfer (Siphon to Wallet)
         if not bank_empty:
             Logger.info(f"[Step D] Siphoning funds from {target_ip} (ID: {target_id}) to main wallet...")
-            siphon_res = await self._trigger_action("siphon", target_id)
-            if not siphon_res:
-                # Fallback attempt using target_ip if target_id differed
-                await self._trigger_action("siphon", target_ip)
+            await self.siphon_target_funds(target_id, target_ip)
             await random_sleep(1, 2)
 
         # Step E: Final Log Wiping
@@ -677,7 +719,7 @@ class LyosGameBot:
     async def siphon_and_secure_all_bypassed_targets(self):
         """
         Sweeps all currently bypassed targets:
-        1. Siphons cracked bank funds into wallet (Type 4).
+        1. Siphons cracked bank funds into wallet (Type 4 or fallback endpoints).
         2. Clears target logs (Type 3).
         3. Secures wallet funds into in-game Bank (/api/bank/deposit).
         """
@@ -698,9 +740,7 @@ class LyosGameBot:
 
                 if target_id and target_ip:
                     Logger.info(f"[Siphon #{idx}/{len(bypassed_list)}] Siphoning cracked funds from IP: {target_ip} (ID: {target_id}) -> Wallet...")
-                    res = await self._trigger_action("siphon", target_id)
-                    if not res and target_id != target_ip:
-                        await self._trigger_action("siphon", target_ip)
+                    await self.siphon_target_funds(target_id, target_ip)
                     await random_sleep(0.5, 1.0)
                     
                     # Wipe logs post-siphon
