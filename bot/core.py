@@ -178,11 +178,15 @@ class LyosGameBot:
     async def get_bypassed_targets(self) -> List[Dict]:
         """Fetch ALL bypassed target accounts from server API & Next.js RSC hack page."""
         endpoints = [
-            f"{BASE_URL}/targets",
             f"{BASE_URL}/targets/bypassed",
             f"{BASE_URL}/processes",
             "https://lyos.fly.dev/apps/hack"
         ]
+        
+        # Add paginated /api/targets endpoints (pages 1 to 10)
+        for page in range(1, 11):
+            endpoints.append(f"{BASE_URL}/targets?page={page}&limit=50")
+            endpoints.append(f"{BASE_URL}/targets?bypassed=true&page={page}&limit=50")
         
         bypassed_targets = []
         seen_ips = set()
@@ -212,6 +216,7 @@ class LyosGameBot:
                             if not candidates and isinstance(raw.get("accounts"), list):
                                 candidates = raw.get("accounts")
                         
+                        count_added = 0
                         for item in candidates:
                             if not isinstance(item, dict):
                                 continue
@@ -220,26 +225,35 @@ class LyosGameBot:
                             target_id = item.get("_id") or item.get("id") or item.get("targetId") or ip
                             if ip and ip not in seen_ips:
                                 seen_ips.add(ip)
+                                count_added += 1
                                 bypassed_targets.append({"ip": ip, "targetId": target_id, "bypassed": True})
+                        
+                        if count_added > 0:
+                            Logger.info(f"[Target Discovery] Endpoint {ep} returned {count_added} target(s).")
                     except Exception:
                         pass
 
                     # 2. Extract targets from text/RSC stream
                     import re
-                    # Extract pairs of IP addresses (10.x.x.x) and hex IDs
                     ip_matches = re.findall(r'\b10\.\d{1,3}\.\d{1,3}\.\d{1,3}\b', text_content)
                     hex_ids = re.findall(r'[a-f0-9]{24}', text_content)
                     valid_ids = list(dict.fromkeys(hex_ids))
                     
+                    rsc_added = 0
                     for idx, found_ip in enumerate(ip_matches):
                         if found_ip not in seen_ips:
                             seen_ips.add(found_ip)
+                            rsc_added += 1
                             tid = valid_ids[idx] if idx < len(valid_ids) else found_ip
                             bypassed_targets.append({"ip": found_ip, "targetId": tid, "bypassed": True})
+                    
+                    if rsc_added > 0:
+                        Logger.info(f"[Target Discovery] RSC Stream {ep} extracted {rsc_added} new target(s).")
 
             except Exception:
                 continue
 
+        Logger.info(f"[Target Discovery Total] Discovered a total of {len(bypassed_targets)} target(s) across all endpoints.")
         return bypassed_targets
 
     async def siphon_target_funds(self, target_id: str, target_ip: str) -> bool:
