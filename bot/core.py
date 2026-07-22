@@ -176,18 +176,52 @@ class LyosGameBot:
     # Target Discovery & Bypassed Management
     # ------------------------------------------------------------------
     async def get_bypassed_targets(self) -> List[Dict]:
-        """Fetch list of already bypassed target accounts from server API."""
-        try:
-            res = await self.client.get(f"{BASE_URL}/targets/bypassed")
-            if res.status_code == 200:
-                raw = res.json()
-                if isinstance(raw, list):
-                    return raw
-                elif isinstance(raw, dict):
-                    return raw.get("targets") or raw.get("bypassed") or raw.get("data") or []
-        except Exception as e:
-            Logger.error(f"[Acc #{self.account_index}] Error fetching bypassed targets: {e}")
-        return []
+        """Fetch list of already bypassed target accounts from server API across multiple candidate endpoints."""
+        endpoints = [
+            f"{BASE_URL}/targets/bypassed",
+            f"{BASE_URL}/targets",
+            f"{BASE_URL}/processes",
+            f"{BASE_URL}/user/bypassed"
+        ]
+        
+        bypassed_targets = []
+        seen_ips = set()
+
+        for ep in endpoints:
+            try:
+                res = await self.client.get(ep)
+                if res.status_code == 200:
+                    raw = res.json()
+                    candidates = []
+                    if isinstance(raw, list):
+                        candidates = raw
+                    elif isinstance(raw, dict):
+                        candidates = (
+                            raw.get("targets") or raw.get("bypassed") or raw.get("data") or
+                            raw.get("bypassedTargets") or raw.get("processes") or raw.get("list") or []
+                        )
+                    
+                    for item in candidates:
+                        if not isinstance(item, dict):
+                            continue
+                        
+                        # Filter for bypassed / active targets
+                        is_bypassed = (
+                            item.get("bypassed") is True or
+                            item.get("status") in ("bypassed", "active", "completed") or
+                            item.get("isBypassed") is True or
+                            item.get("type") in (0, "bypass") or
+                            "ip" in item or "targetIp" in item
+                        )
+                        
+                        ip = item.get("ip") or item.get("targetIp") or item.get("target_ip")
+                        if ip and ip not in seen_ips and is_bypassed:
+                            seen_ips.add(ip)
+                            bypassed_targets.append(item)
+            except Exception:
+                continue
+
+        return bypassed_targets
 
     async def focus_bypassed_targets_crack_and_miner(self, threshold: int = 15) -> bool:
         """
@@ -365,9 +399,12 @@ class LyosGameBot:
             if res_ip:
                 return True
 
-        # Fallback Endpoints Matrix
+        # Fallback Endpoints Matrix (Including Bank Withdrawal payloads)
         siphon_endpoints = [
             (f"{BASE_URL}/bank/siphon", {"targetId": target_id, "ip": target_ip}),
+            (f"{BASE_URL}/bank/withdraw", {"targetId": target_id, "targetIp": target_ip, "ip": target_ip}),
+            (f"{BASE_URL}/bank/withdraw", {"target_id": target_id, "ip": target_ip}),
+            (f"{BASE_URL}/target/bank/withdraw", {"targetId": target_id, "ip": target_ip}),
             (f"{BASE_URL}/bank/siphon", {"target": target_id, "ip": target_ip}),
             (f"{BASE_URL}/siphon", {"targetId": target_id, "ip": target_ip}),
             (f"{BASE_URL}/target/siphon", {"targetId": target_id, "ip": target_ip, "action": "siphon"}),
@@ -379,7 +416,7 @@ class LyosGameBot:
             try:
                 r = await self.client.post(ep_url, json=ep_payload)
                 if r.status_code in (200, 201):
-                    Logger.success(f"[Siphon Engine] Siphon successful via {ep_url}!")
+                    Logger.success(f"[Siphon Engine] Siphon/Withdrawal successful via {ep_url}!")
                     return True
             except Exception:
                 continue
