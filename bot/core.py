@@ -647,13 +647,41 @@ class LyosGameBot:
 
         Logger.success(f"=== Completed Post-Bypass Steps for IP: {target_ip} ===")
 
+    async def siphon_and_secure_all_bypassed_targets(self):
+        """
+        Sweeps all currently bypassed targets:
+        1. Siphons cracked bank funds into wallet (Type 4).
+        2. Clears target logs (Type 3).
+        3. Secures wallet funds into in-game Bank (/api/bank/deposit).
+        """
+        Logger.info(f"[Acc #{self.account_index}] ⚡ Running Siphon & Vault Sweep across all bypassed targets...")
+        
+        # 1. Sweep all bypassed targets for siphoning
+        bypassed_list = await self.get_bypassed_targets()
+        if bypassed_list:
+            Logger.info(f"[Siphon Sweep] Found {len(bypassed_list)} bypassed target(s). Triggering fund siphons...")
+            for idx, target in enumerate(bypassed_list, start=1):
+                if not isinstance(target, dict):
+                    continue
+                target_ip = target.get("ip") or target.get("targetIp") or target.get("target_ip")
+                if target_ip:
+                    Logger.info(f"[Siphon #{idx}/{len(bypassed_list)}] Siphoning cracked funds from IP: {target_ip} -> Wallet...")
+                    await self._trigger_action("siphon", target_ip)
+                    await random_sleep(0.5, 1.0)
+                    # Wipe logs post-siphon
+                    await self._trigger_action("logs", target_ip)
+                    await random_sleep(0.5, 1.0)
+
+        # 2. Deposit all siphoned wallet money into Bank
+        await self.secure_wallet_to_bank()
+
     async def _hourly_deposit_loop(self):
-        """Background task that runs every 1 hour (3600s) to automatically check and deposit wallet funds."""
+        """Background task that runs every 1 hour (3600s) to siphons funds & deposit wallet funds to Bank."""
         try:
             while True:
                 await asyncio.sleep(3600)
-                Logger.info(f"[Acc #{self.account_index}] Hourly Scheduled Check: Checking wallet balance & depositing to Bank...")
-                await self.secure_wallet_to_bank()
+                Logger.info(f"[Acc #{self.account_index}] ⏰ Hourly Scheduled Task: Sweeping bypassed targets & securing wallet -> Bank...")
+                await self.siphon_and_secure_all_bypassed_targets()
         except asyncio.CancelledError:
             pass
 
@@ -663,9 +691,9 @@ class LyosGameBot:
     async def run_workflow(self, target_active_jobs: int = 10):
         Logger.info(f"--- Starting Session for Account #{self.account_index} ---")
         
-        # 0. First Turn-On / Startup Check: Transfer any existing wallet money to bank immediately
-        Logger.info(f"[Startup Check] Checking wallet balance and depositing to Bank on bot startup...")
-        await self.secure_wallet_to_bank()
+        # 0. First Turn-On / Startup Check: Sweep all bypassed targets for siphoning & secure all wallet funds -> bank immediately
+        Logger.info(f"[Startup Sweep] Running full siphon & vault sweep across all bypassed targets on bot startup...")
+        await self.siphon_and_secure_all_bypassed_targets()
 
         # Start hourly background wallet deposit checker task
         deposit_timer_task = asyncio.create_task(self._hourly_deposit_loop())
