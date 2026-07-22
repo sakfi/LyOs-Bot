@@ -1,0 +1,9 @@
+{
+  "auto_tap": true,
+  "auto_claim_farming": true,
+  "auto_daily_checkin": true,
+  "auto_complete_tasks": true,
+  "tap_count_range": [30, 80],
+  "delay_between_accounts_seconds": [3, 7],
+  "loop_delay_minutes": [10, 15]
+}
