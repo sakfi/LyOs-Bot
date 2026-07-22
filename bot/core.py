@@ -399,36 +399,55 @@ class LyosGameBot:
     async def siphon_target_funds(self, target_id: str, target_ip: str) -> bool:
         """
         Universal Siphon Engine:
-        Tries primary process creation (/api/process/create type 4) and fallback direct endpoints:
-        - POST /api/bank/siphon
-        - POST /api/siphon
-        - POST /api/target/siphon
-        Supports both targetId and target_ip payloads.
+        Primary Endpoint: POST /api/hack/steal with {"targetId": target_id} or {"targetId": target_id, "amount": "max"}
+        Fallback Endpoints: /api/process/create (Type 4), /api/bank/withdraw, etc.
         """
         Logger.info(f"[Siphon Engine] Initiating fund siphon for Target: {target_ip} (ID: {target_id})...")
 
-        # Endpoint 1: Primary /api/process/create (Type 4)
+        # ------------------------------------------------------------------
+        # Primary Endpoint (Exact match from Network Trace): POST /api/hack/steal
+        # ------------------------------------------------------------------
+        steal_url = f"{BASE_URL}/hack/steal"
+        steal_payloads = [
+            {"targetId": target_id},
+            {"targetId": target_id, "amount": "max"},
+            {"targetId": target_id, "amount": "all"},
+            {"target": target_id},
+            {"ip": target_ip, "targetId": target_id}
+        ]
+
+        for p in steal_payloads:
+            try:
+                res = await self.client.post(steal_url, json=p)
+                if res.status_code in (200, 201):
+                    Logger.success(f"[Siphon Engine] Successfully siphoned funds via POST /api/hack/steal for Target {target_ip}!")
+                    return True
+                elif res.status_code == 400 and ("empty" in res.text.lower() or "0" in res.text):
+                    Logger.info(f"[Siphon Engine] Target bank {target_ip} is currently empty.")
+                    return True
+            except Exception as e:
+                Logger.warning(f"[Siphon Engine] Error posting to /api/hack/steal: {e}")
+
+        # ------------------------------------------------------------------
+        # Fallback 1: Process Creation /api/process/create (Type 4)
+        # ------------------------------------------------------------------
         res = await self._trigger_action("siphon", target_id)
         if res:
             return True
 
-        # Fallback 1.1: Try IP on /api/process/create
         if target_id != target_ip:
             res_ip = await self._trigger_action("siphon", target_ip)
             if res_ip:
                 return True
 
-        # Fallback Endpoints Matrix (Including Bank Withdrawal payloads)
+        # Fallback Endpoints Matrix
         siphon_endpoints = [
             (f"{BASE_URL}/bank/siphon", {"targetId": target_id, "ip": target_ip}),
             (f"{BASE_URL}/bank/withdraw", {"targetId": target_id, "targetIp": target_ip, "ip": target_ip}),
             (f"{BASE_URL}/bank/withdraw", {"target_id": target_id, "ip": target_ip}),
             (f"{BASE_URL}/target/bank/withdraw", {"targetId": target_id, "ip": target_ip}),
-            (f"{BASE_URL}/bank/siphon", {"target": target_id, "ip": target_ip}),
             (f"{BASE_URL}/siphon", {"targetId": target_id, "ip": target_ip}),
-            (f"{BASE_URL}/target/siphon", {"targetId": target_id, "ip": target_ip, "action": "siphon"}),
-            (f"{BASE_URL}/process/create", {"targetId": target_id, "type": "siphon", "action": "siphon"}),
-            (f"{BASE_URL}/process/create", {"targetId": target_ip, "type": 4})
+            (f"{BASE_URL}/target/siphon", {"targetId": target_id, "ip": target_ip, "action": "siphon"})
         ]
 
         for ep_url, ep_payload in siphon_endpoints:
@@ -440,7 +459,7 @@ class LyosGameBot:
             except Exception:
                 continue
 
-        Logger.warning(f"[Siphon Engine] Primary and fallback siphon endpoints attempted for target {target_ip}.")
+        Logger.warning(f"[Siphon Engine] All primary & fallback siphon attempts completed for target {target_ip}.")
         return False
 
     # ------------------------------------------------------------------
