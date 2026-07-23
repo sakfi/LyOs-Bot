@@ -173,23 +173,62 @@ class LyosGameBot:
         return False
 
     # ------------------------------------------------------------------
-    # Target Discovery & Bypassed Management
+    # Target Discovery & Persistent Cache Management (targets.json)
     # ------------------------------------------------------------------
+    def _get_target_cache_file(self) -> str:
+        return os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "targets.json")
+
+    def load_target_cache(self) -> Dict[str, str]:
+        """Loads target IP -> MongoDB targetId mapping from local targets.json file."""
+        cache_file = self._get_target_cache_file()
+        if os.path.exists(cache_file):
+            try:
+                with open(cache_file, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    if isinstance(data, dict):
+                        return data
+            except Exception as e:
+                Logger.warning(f"[Target Cache] Error reading targets.json: {e}")
+        return {}
+
+    def save_target_cache(self, targets_map: Dict[str, str]):
+        """Saves target IP -> MongoDB targetId mapping into local targets.json file."""
+        cache_file = self._get_target_cache_file()
+        try:
+            current = self.load_target_cache()
+            current.update(targets_map)
+            with open(cache_file, "w", encoding="utf-8") as f:
+                json.dump(current, f, indent=2)
+            Logger.info(f"[Target Cache] Saved {len(current)} target(s) to targets.json.")
+        except Exception as e:
+            Logger.warning(f"[Target Cache] Error writing to targets.json: {e}")
+
     async def get_bypassed_targets(self) -> List[Dict]:
-        """Fetch ALL bypassed target accounts from server API & Next.js RSC hack page."""
+        """Fetch ALL bypassed target accounts from server API, Next.js RSC hack page, and persistent targets.json cache."""
+        # 1. Load targets from local targets.json file
+        cached_targets = self.load_target_cache()
+        bypassed_targets = []
+        seen_ips = set()
+
+        if cached_targets:
+            Logger.info(f"[Target Cache] Loaded {len(cached_targets)} persistent target(s) from targets.json:")
+            for ip, tid in cached_targets.items():
+                seen_ips.add(ip)
+                bypassed_targets.append({"ip": ip, "targetId": tid, "bypassed": True})
+                Logger.info(f"  -> IP: {ip} | MongoDB ID: {tid}")
+
+        # 2. Query live server endpoints
         endpoints = [
             f"{BASE_URL}/targets/bypassed",
             f"{BASE_URL}/processes",
             "https://lyos.fly.dev/apps/hack"
         ]
         
-        # Add paginated /api/targets endpoints (pages 1 to 10)
         for page in range(1, 11):
             endpoints.append(f"{BASE_URL}/targets?page={page}&limit=50")
             endpoints.append(f"{BASE_URL}/targets?bypassed=true&page={page}&limit=50")
-        
-        bypassed_targets = []
-        seen_ips = set()
+
+        new_cached = {}
 
         for ep in endpoints:
             try:
@@ -202,7 +241,6 @@ class LyosGameBot:
                 if res.status_code == 200:
                     text_content = res.text
                     
-                    # 1. Try standard JSON parsing
                     try:
                         raw = res.json()
                         candidates = []
@@ -223,17 +261,18 @@ class LyosGameBot:
                             
                             ip = item.get("ip") or item.get("targetIp") or item.get("target_ip")
                             target_id = item.get("_id") or item.get("id") or item.get("targetId") or ip
-                            if ip and ip not in seen_ips:
-                                seen_ips.add(ip)
-                                count_added += 1
-                                bypassed_targets.append({"ip": ip, "targetId": target_id, "bypassed": True})
+                            if ip:
+                                new_cached[ip] = target_id
+                                if ip not in seen_ips:
+                                    seen_ips.add(ip)
+                                    count_added += 1
+                                    bypassed_targets.append({"ip": ip, "targetId": target_id, "bypassed": True})
                         
                         if count_added > 0:
-                            Logger.info(f"[Target Discovery] Endpoint {ep} returned {count_added} target(s).")
+                            Logger.info(f"[Target Discovery] Endpoint {ep} returned {count_added} new target(s).")
                     except Exception:
                         pass
 
-                    # 2. Extract targets from text/RSC stream
                     import re
                     ip_matches = re.findall(r'\b10\.\d{1,3}\.\d{1,3}\.\d{1,3}\b', text_content)
                     hex_ids = re.findall(r'[a-f0-9]{24}', text_content)
@@ -241,10 +280,11 @@ class LyosGameBot:
                     
                     rsc_added = 0
                     for idx, found_ip in enumerate(ip_matches):
+                        tid = valid_ids[idx] if idx < len(valid_ids) else found_ip
+                        new_cached[found_ip] = tid
                         if found_ip not in seen_ips:
                             seen_ips.add(found_ip)
                             rsc_added += 1
-                            tid = valid_ids[idx] if idx < len(valid_ids) else found_ip
                             bypassed_targets.append({"ip": found_ip, "targetId": tid, "bypassed": True})
                     
                     if rsc_added > 0:
@@ -253,7 +293,10 @@ class LyosGameBot:
             except Exception:
                 continue
 
-        Logger.info(f"[Target Discovery Total] Discovered a total of {len(bypassed_targets)} target(s) across all endpoints.")
+        if new_cached:
+            self.save_target_cache(new_cached)
+
+        Logger.info(f"[Target Discovery Total] Managing a total of {len(bypassed_targets)} target(s) across cache & network.")
         return bypassed_targets
 
     async def siphon_target_funds(self, target_id: str, target_ip: str) -> bool:
@@ -375,6 +418,8 @@ class LyosGameBot:
                         # Filter strictly for: Reputation == 0 AND Firewall Level >= 100
                         if ip and ip not in target_ips_seen:
                             target_ips_seen.add(ip)
+                            if target_id and target_id != ip:
+                                self.save_target_cache({ip: target_id})
                             if int(rep) == 0 and int(firewall) >= 100:
                                 acc["targetId"] = target_id
                                 Logger.success(f"[Matched Target] IP: {ip} (ID: {acc['targetId']}) | Rep: {rep} | Firewall: {firewall}")
