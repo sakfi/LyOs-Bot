@@ -204,132 +204,192 @@ class LyosGameBot:
             Logger.warning(f"[Target Cache] Error writing to targets.json: {e}")
 
     async def get_bypassed_targets(self) -> List[Dict]:
-        """Fetch ALL bypassed target accounts from server API, Next.js RSC hack page, and persistent targets.json cache."""
-        # 1. Load targets from local targets.json file
+        """Fetch ALL bypassed target accounts from /api/hacked/list and persistent targets.json cache."""
+        import re
         cached_targets = self.load_target_cache()
         bypassed_targets = []
         seen_ips = set()
 
+        # 1. Load targets from local targets.json file
         if cached_targets:
             Logger.info(f"[Target Cache] Loaded {len(cached_targets)} persistent target(s) from targets.json:")
             for ip, tid in cached_targets.items():
                 seen_ips.add(ip)
-                bypassed_targets.append({"ip": ip, "targetId": tid, "bypassed": True})
+                bypassed_targets.append({"ip": ip, "targetId": tid, "bypassed": True, "money": 0})
                 Logger.info(f"  -> IP: {ip} | MongoDB ID: {tid}")
 
-        # 2. Query live server endpoints
-        endpoints = [
-            f"{BASE_URL}/targets/bypassed",
-            f"{BASE_URL}/processes",
-            "https://lyos.fly.dev/apps/hack"
-        ]
-        
-        for page in range(1, 11):
-            endpoints.append(f"{BASE_URL}/targets?page={page}&limit=50")
-            endpoints.append(f"{BASE_URL}/targets?bypassed=true&page={page}&limit=50")
-
+        # 2. Query the real API: GET /api/hacked/list?page=N&limit=50
         new_cached = {}
-
-        for ep in endpoints:
+        for page in range(1, 11):
             try:
-                req_headers = self.headers.copy()
-                if "apps/hack" in ep:
-                    req_headers["RSC"] = "1"
-                    req_headers["Accept"] = "*/*"
-
-                res = await self.client.get(ep, headers=req_headers)
+                res = await self.client.get(f"{BASE_URL}/hacked/list?page={page}&limit=50")
                 if res.status_code == 200:
-                    text_content = res.text
-                    
-                    try:
-                        raw = res.json()
-                        candidates = []
-                        if isinstance(raw, list):
-                            candidates = raw
-                        elif isinstance(raw, dict):
-                            candidates = (
-                                raw.get("targets") or raw.get("bypassed") or raw.get("data") or
-                                raw.get("bypassedTargets") or raw.get("processes") or raw.get("list") or []
-                            )
-                            if not candidates and isinstance(raw.get("accounts"), list):
-                                candidates = raw.get("accounts")
-                        
-                        count_added = 0
-                        for item in candidates:
-                            if not isinstance(item, dict):
-                                continue
-                            
-                            ip = item.get("ip") or item.get("targetIp") or item.get("target_ip")
-                            target_id = item.get("_id") or item.get("id") or item.get("targetId") or ip
-                            if ip:
-                                new_cached[ip] = target_id
-                                if ip not in seen_ips:
-                                    seen_ips.add(ip)
-                                    count_added += 1
-                                    bypassed_targets.append({"ip": ip, "targetId": target_id, "bypassed": True})
-                        
-                        if count_added > 0:
-                            Logger.info(f"[Target Discovery] Endpoint {ep} returned {count_added} new target(s).")
-                    except Exception:
-                        pass
+                    data = res.json()
+                    computers = data.get("computers", [])
+                    if not computers:
+                        break  # No more pages
 
-                    import re
-                    ip_matches = re.findall(r'\b10\.\d{1,3}\.\d{1,3}\.\d{1,3}\b', text_content)
-                    hex_ids = re.findall(r'[a-f0-9]{24}', text_content)
-                    valid_ids = list(dict.fromkeys(hex_ids))
-                    
-                    rsc_added = 0
-                    for idx, found_ip in enumerate(ip_matches):
-                        tid = valid_ids[idx] if idx < len(valid_ids) else found_ip
-                        new_cached[found_ip] = tid
-                        if found_ip not in seen_ips:
-                            seen_ips.add(found_ip)
-                            rsc_added += 1
-                            bypassed_targets.append({"ip": found_ip, "targetId": tid, "bypassed": True})
-                    
-                    if rsc_added > 0:
-                        Logger.info(f"[Target Discovery] RSC Stream {ep} extracted {rsc_added} new target(s).")
+                    for entry in computers:
+                        target = entry.get("target", {})
+                        ip = target.get("ip", "")
+                        target_id = target.get("_id", "")
+                        money = target.get("money", 0)
+                        has_crack = entry.get("hasCrack", False)
 
-            except Exception:
-                continue
+                        if ip and target_id:
+                            new_cached[ip] = target_id
+                            if ip not in seen_ips:
+                                seen_ips.add(ip)
+                                bypassed_targets.append({
+                                    "ip": ip,
+                                    "targetId": target_id,
+                                    "bypassed": True,
+                                    "money": money,
+                                    "hasCrack": has_crack,
+                                    "login": target.get("login", ""),
+                                })
+                    
+                    Logger.info(f"[Target Discovery] /api/hacked/list page={page} returned {len(computers)} target(s).")
+                    
+                    if len(computers) < 50:
+                        break  # Last page
+                else:
+                    Logger.info(f"[Target Discovery] /api/hacked/list page={page} -> HTTP {res.status_code}")
+                    break
+            except Exception as e:
+                Logger.warning(f"[Target Discovery] Error querying /api/hacked/list page={page}: {e}")
+                break
+
+        # 3. Update money values for cached targets from live data
+        for bt in bypassed_targets:
+            if bt["ip"] in new_cached and bt.get("money", 0) == 0:
+                # Try to get updated money from the live targets
+                pass
 
         if new_cached:
             self.save_target_cache(new_cached)
 
-        Logger.info(f"[Target Discovery Total] Managing a total of {len(bypassed_targets)} target(s) across cache & network.")
+        Logger.info(f"[Target Discovery Total] Discovered {len(bypassed_targets)} total target(s) across cache & API.")
         return bypassed_targets
+
+    async def _get_target_balance(self, target_id: str) -> int:
+        """Fetch the current money balance for a specific hacked target."""
+        try:
+            res = await self.client.get(f"{BASE_URL}/hacked/target/{target_id}")
+            if res.status_code == 200:
+                data = res.json()
+                money = data.get("computer", {}).get("target", {}).get("money", 0)
+                return int(money)
+        except Exception as e:
+            Logger.warning(f"[Balance Check] Error fetching balance for {target_id}: {e}")
+        return 0
+
+    async def _solve_altcha_challenge(self, amount: int) -> Optional[str]:
+        """
+        Fetch and solve the ALTCHA proof-of-work challenge from /api/security/altcha-challenge.
+        Returns the base64-encoded solution payload string, or None on failure.
+        """
+        import hashlib
+        import base64
+
+        try:
+            res = await self.client.get(f"{BASE_URL}/security/altcha-challenge?amount={amount}")
+            if res.status_code != 200:
+                Logger.warning(f"[ALTCHA] Challenge endpoint returned HTTP {res.status_code}: {res.text[:200]}")
+                return None
+
+            challenge_data = res.json()
+            algorithm = challenge_data.get("algorithm", "SHA-256")
+            challenge = challenge_data.get("challenge", "")
+            salt = challenge_data.get("salt", "")
+            max_number = challenge_data.get("maxnumber", 100000)
+            signature = challenge_data.get("signature", "")
+
+            Logger.info(f"[ALTCHA] Solving PoW challenge (algorithm={algorithm}, maxnumber={max_number})...")
+
+            # Solve: find number N where hash(salt + N) == challenge
+            import time
+            start_time = time.time()
+            for n in range(max_number + 1):
+                hash_input = f"{salt}{n}"
+                if algorithm in ("SHA-256", "SHA256"):
+                    h = hashlib.sha256(hash_input.encode()).hexdigest()
+                elif algorithm in ("SHA-384", "SHA384"):
+                    h = hashlib.sha384(hash_input.encode()).hexdigest()
+                elif algorithm in ("SHA-512", "SHA512"):
+                    h = hashlib.sha512(hash_input.encode()).hexdigest()
+                else:
+                    h = hashlib.sha256(hash_input.encode()).hexdigest()
+
+                if h == challenge:
+                    elapsed = int((time.time() - start_time) * 1000)
+                    Logger.success(f"[ALTCHA] Solved! number={n} in {elapsed}ms")
+
+                    # Build the solution payload (base64-encoded JSON)
+                    solution = {
+                        "algorithm": algorithm,
+                        "challenge": challenge,
+                        "number": n,
+                        "salt": salt,
+                        "signature": signature,
+                        "took": elapsed,
+                    }
+                    payload = base64.b64encode(json.dumps(solution).encode()).decode()
+                    return payload
+
+            Logger.warning(f"[ALTCHA] Failed to solve challenge in {max_number} iterations!")
+            return None
+
+        except Exception as e:
+            Logger.error(f"[ALTCHA] Error solving challenge: {e}")
+            return None
 
     async def siphon_target_funds(self, target_id: str, target_ip: str) -> bool:
         """
-        Universal Siphon Engine:
-        Executes candidate steal endpoints and logs detailed HTTP response diagnostic data.
+        Steal funds from a hacked target using the correct two-step flow:
+        1. Check target balance via /api/hacked/target/{id}
+        2. Get ALTCHA PoW challenge from /api/security/altcha-challenge?amount=N
+        3. Solve the challenge client-side
+        4. POST /api/hack/steal with {targetId, amount, altchaPayload}
         """
         Logger.info(f"[Siphon Engine] Initiating fund siphon for Target: {target_ip} (ID: {target_id})...")
 
-        # Candidate endpoints matrix for Steal / Siphon
-        steal_candidates = [
-            (f"{BASE_URL}/hack/steal", {"targetId": target_id}),
-            (f"{BASE_URL}/hack/steal", {"targetId": target_id, "amount": "max"}),
-            (f"{BASE_URL}/targets/hack/steal", {"targetId": target_id}),
-            (f"{BASE_URL}/target/steal", {"targetId": target_id}),
-            (f"{BASE_URL}/bank/withdraw", {"targetId": target_id, "amount": "all"}),
-            (f"{BASE_URL}/bank/siphon", {"targetId": target_id}),
-            (f"{BASE_URL}/hack/steal", {"target": target_id}),
-            (f"{BASE_URL}/hack/steal", {"ip": target_ip})
-        ]
+        # Step 1: Check target balance
+        balance = await self._get_target_balance(target_id)
+        if balance <= 0:
+            Logger.info(f"[Siphon Engine] Target {target_ip} has no funds (balance: ${balance}). Skipping.")
+            return False
 
-        for ep_url, p in steal_candidates:
-            try:
-                res = await self.client.post(ep_url, json=p)
-                if res.status_code in (200, 201):
-                    Logger.success(f"[Siphon Engine] Successfully siphoned/stole funds via {ep_url} for Target {target_ip}!")
-                    return True
-                else:
-                    Logger.info(f"[Siphon Diagnostic] {ep_url} {p} -> HTTP {res.status_code}: {res.text[:120]}")
-            except Exception as e:
-                Logger.warning(f"[Siphon Engine] Exception calling {ep_url}: {e}")
+        Logger.info(f"[Siphon Engine] Target {target_ip} balance: ${balance}. Initiating steal...")
 
-        Logger.warning(f"[Siphon Engine] All candidate siphon attempts completed for target {target_ip}.")
+        # Step 2: Get and solve ALTCHA challenge
+        altcha_payload = await self._solve_altcha_challenge(balance)
+        if not altcha_payload:
+            Logger.warning(f"[Siphon Engine] Failed to solve ALTCHA challenge for {target_ip}. Cannot steal.")
+            return False
+
+        # Step 3: Execute steal
+        try:
+            steal_body = {
+                "targetId": target_id,
+                "amount": balance,
+                "altchaPayload": altcha_payload,
+            }
+            res = await self.client.post(f"{BASE_URL}/hack/steal", json=steal_body)
+            if res.status_code in (200, 201):
+                try:
+                    result = res.json()
+                    stolen = result.get("stolen", 0)
+                    commission = result.get("commission", 0)
+                    Logger.success(f"[Siphon Engine] STOLEN ${stolen} from {target_ip}! (commission: ${commission})")
+                except Exception:
+                    Logger.success(f"[Siphon Engine] Successfully stole funds from {target_ip}! Response: {res.text[:200]}")
+                return True
+            else:
+                Logger.warning(f"[Siphon Engine] Steal failed for {target_ip}: HTTP {res.status_code} -> {res.text[:200]}")
+        except Exception as e:
+            Logger.error(f"[Siphon Engine] Exception during steal for {target_ip}: {e}")
+
         return False
 
     async def focus_bypassed_targets_crack_and_miner(self, threshold: int = 15) -> bool:
@@ -486,69 +546,6 @@ class LyosGameBot:
 
         return None
 
-    async def siphon_target_funds(self, target_id: str, target_ip: str, amount: Optional[float] = None) -> bool:
-        """
-        Universal Siphon Engine:
-        Sends Steal to Wallet requests with targetId and numerical/string amount parameters.
-        """
-        Logger.info(f"[Siphon Engine] Initiating fund siphon for Target: {target_ip} (ID: {target_id})...")
-
-        # Numerical amount options matching input field on Steal to Wallet card
-        steal_amounts = [amount, 99999999, 100000, "max", "all"] if amount else [99999999, 100000, "max", "all"]
-
-        steal_candidates = []
-        for amt in steal_amounts:
-            steal_candidates.extend([
-                (f"{BASE_URL}/hack/steal", {"targetId": target_id, "amount": amt}),
-                (f"{BASE_URL}/hack/steal", {"id": target_id, "amount": amt}),
-                (f"{BASE_URL}/targets/hack/steal", {"targetId": target_id, "amount": amt}),
-                (f"{BASE_URL}/bank/withdraw", {"targetId": target_id, "amount": amt}),
-                (f"{BASE_URL}/target/steal", {"targetId": target_id, "amount": amt}),
-            ])
-        
-        # Additional fallback formats
-        steal_candidates.extend([
-            (f"{BASE_URL}/hack/steal", {"targetId": target_id}),
-            (f"{BASE_URL}/hack/steal", {"ip": target_ip, "amount": 99999999}),
-            (f"{BASE_URL}/bank/siphon", {"targetId": target_id, "amount": 99999999})
-        ])
-
-        for ep_url, p in steal_candidates:
-            try:
-                res = await self.client.post(ep_url, json=p)
-                if res.status_code in (200, 201):
-                    Logger.success(f"[Siphon Engine] Successfully siphoned/stole funds via {ep_url} for Target {target_ip}!")
-                    return True
-                elif res.status_code == 400 and ("empty" in res.text.lower() or "0" in res.text or "no funds" in res.text.lower()):
-                    Logger.info(f"[Siphon Engine] Target bank {target_ip} is currently empty.")
-                    return True
-            except Exception as e:
-                Logger.warning(f"[Siphon Engine] Error calling {ep_url}: {e}")
-
-        Logger.warning(f"[Siphon Engine] All primary & fallback siphon attempts completed for target {target_ip}.")
-        return False
-
-        # Fallback Endpoints Matrix
-        siphon_endpoints = [
-            (f"{BASE_URL}/bank/siphon", {"targetId": target_id, "ip": target_ip}),
-            (f"{BASE_URL}/bank/withdraw", {"targetId": target_id, "targetIp": target_ip, "ip": target_ip}),
-            (f"{BASE_URL}/bank/withdraw", {"target_id": target_id, "ip": target_ip}),
-            (f"{BASE_URL}/target/bank/withdraw", {"targetId": target_id, "ip": target_ip}),
-            (f"{BASE_URL}/siphon", {"targetId": target_id, "ip": target_ip}),
-            (f"{BASE_URL}/target/siphon", {"targetId": target_id, "ip": target_ip, "action": "siphon"})
-        ]
-
-        for ep_url, ep_payload in siphon_endpoints:
-            try:
-                r = await self.client.post(ep_url, json=ep_payload)
-                if r.status_code in (200, 201):
-                    Logger.success(f"[Siphon Engine] Siphon/Withdrawal successful via {ep_url}!")
-                    return True
-            except Exception:
-                continue
-
-        Logger.warning(f"[Siphon Engine] All primary & fallback siphon attempts completed for target {target_ip}.")
-        return False
 
     # ------------------------------------------------------------------
     # Dynamic Miner Upload (Highest Level Fallback)
