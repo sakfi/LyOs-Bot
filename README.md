@@ -26,12 +26,13 @@ Target Platform: LyOS Telegram MiniApp (https://lyos.fly.dev)
 
 Core Hacking Modules:
 - Autonomous Execution:
+  - Startup Active Target Sync (Auto-cleans & syncs targets.json on boot)
   - Startup Wallet Auto-Deposit (Immediate Vault Protection)
   - 1-Hour Vault Defense Loop (Background Cron Timer)
   - Self-Intelligent RAM Guard (Auto-Halt when RAM <= 16MB)
   - Dynamic Memory Recovery (Monitors job timers & freed RAM)
   - Bypassed Target Focus Mode (Prioritizes >= 15 Bypassed Targets)
-  - Level-378 Miner Deployment (Auto-decrement 378 -> 1)
+  - Level-378 Miner Deployment (Auto-decrement 378 -> 1 fallback via /api/miner/upload)
   - Anti-Forensics Log Erasure (Pre-siphon & Post-siphon Wiping)
 - System Exploitation:
   - 9-10 Concurrent Active Bypass Jobs
@@ -40,8 +41,9 @@ Core Hacking Modules:
 
 Live System Telemetry:
   [23:20:01] [+] SYSTEM_INIT: Loaded 1 account session token(s)
+  [23:20:01] [ℹ] TARGET_SYNC: Updated targets.json with 15 active bypassed targets
   [23:20:02] [✔] WALLET_GUARD: Transferred 45,000 funds -> In-Game Bank
-  [23:20:05] [⚡] FOCUS_MODE: Detected 16 bypassed targets -> Cracking Banks & Miners
+  [23:20:05] [⚡] FOCUS_MODE: Detected 15 bypassed targets -> Cracking Banks & Miners
   [23:20:15] [!] RAM_ALERT: Memory full (12MB free). Halting scans -> Monitoring job timers
   [23:20:45] [✔] RAM_RECOVERED: 128MB free memory restored -> Resuming core operations
 ```
@@ -52,7 +54,8 @@ Live System Telemetry:
 
 ```mermaid
 graph TD
-    A["🚀 Startup & Initial Session"] --> B["🏦 Startup Wallet Check & Bank Secure"]
+    A["🚀 Startup & Initial Session"] --> S["🔄 Active Target Sync (targets.json)"]
+    S --> B["🏦 Startup Wallet Check & Bank Secure"]
     B --> C["🛡️ System RAM & Process Monitor"]
     
     C -->|"RAM Full (<= 16MB)"| D["🛑 RAM Guard Active"]
@@ -64,7 +67,7 @@ graph TD
     
     E -->|"Bypassed >= 15"| F["⚡ Focus Mode Activated"]
     F --> F1["🔓 Crack Bank Account"]
-    F1 --> F2["⛏️ Upload Level-378 Miner"]
+    F1 --> F2["⛏️ Upload Level-378 Miner (/api/miner/upload)"]
     F2 --> F3["🧹 Wipe Logs & Siphon Funds"]
     F3 --> F4["🏦 Bank Auto-Deposit"]
     
@@ -79,10 +82,11 @@ graph TD
 
 | Feature Module | Description | Technical Mechanism |
 | :--- | :--- | :--- |
+| 🔄 **Startup Target Sync** | Target cache sanitation | Automatically syncs `/api/hacked/list` on boot to update `targets.json` and purge stale targets. |
 | 🛡️ **Self-Intelligent RAM Guard** | Hardware memory protection | Halts operations when RAM $\le 16$ MB. Runs wallet surveillance & resumes automatically upon RAM release. |
 | 🏦 **Automated Vault Protection** | Financial safety & auto-deposit | Immediate startup deposit + background 1-hour periodic schedule (`3600s`). |
 | 🎯 **Bypassed Target Focus Mode** | Dedicated exploitation | Auto-detects $\ge 15$ bypassed targets and pauses scanning to prioritize Bank Cracks & Miners. |
-| ⛏️ **Highest-Level Miner Upload** | Income yield optimization | Attempts **Level 378** miner deployment; auto-decrements levels ($378 \rightarrow 1$) on failure. |
+| ⛏️ **Highest-Level Miner Upload** | Income yield optimization | Dedicated `/api/miner/upload` integration; attempts **Level 378** miner deployment with auto-decrement ($378 \rightarrow 1$) on failure. |
 | 🔍 **Precision Target Discovery** | High-value target filtering | Filters for **`Reputation == 0`** & **`Firewall Level >= 100`** across 5-target scan batches. |
 | 🔒 **Anti-Forensics Log Wipe** | Trace sanitization | Double log-cleaning protocol (pre-siphon and post-siphon) to ensure total anonymity. |
 | 🔄 **Multi-Account Orchestration** | Asynchronous session manager | Handles infinite account rotation with randomized human-like delays. |
@@ -145,6 +149,13 @@ Customize execution parameters in `config.json`:
 ```bash
 python main.py
 ```
+
+Upon startup, select your desired **Operational Mode**:
+- `[1] Bypass & Crack`: Scanning, Firewall Bypass, Bank Crack & Miners
+- `[2] Steal & Transfer`: Siphon cracked targets & Vault wallet money -> Bank
+- `[3] Quest Mode`: Claim Daily Check-ins, Daily Quests & Siphon Tasks
+- `[4] All Modes (Full)`: Perform ALL operations continuously with RAM Guard *(Default)*
+- `[5] Upload Miners`: Sweep bypassed targets & upload max level miner (Level 378 fallback)
 
 ---
 

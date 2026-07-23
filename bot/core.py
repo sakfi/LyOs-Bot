@@ -503,48 +503,66 @@ class LyosGameBot:
     async def _trigger_action(self, action_type: str, target_id: str, extra_params: Optional[dict] = None) -> Optional[dict]:
         """POST action payload to the primary process creation endpoint: /api/process/create"""
         url = f"{BASE_URL}/process/create"
-        
-        type_numeric_map = {
-            "bypass": 0,
-            "bank": 1,
-            "miner": 2,
-            "logs": 3
-        }
-        
-        num_type = type_numeric_map.get(action_type, 0)
-        
-        payload = {
-            "targetId": target_id,
-            "type": num_type
-        }
-        if extra_params:
-            payload.update(extra_params)
+        if action_type == "miner":
+            url = f"{BASE_URL}/miner/upload"
+            payload = {
+                "targetId": target_id,
+            }
+            if extra_params and "minerLevel" in extra_params:
+                payload["minerLevel"] = extra_params["minerLevel"]
+        else:
+            type_numeric_map = {
+                "bypass": 0,
+                "bank": 1,
+                "logs": 3
+            }
+            num_type = type_numeric_map.get(action_type, 0)
+            payload = {
+                "targetId": target_id,
+                "type": num_type
+            }
+            if extra_params:
+                payload.update(extra_params)
 
-        for attempt in range(1, 4):
+        for attempt in range(1, 6):
             try:
                 res = await self.client.post(url, json=payload)
                 if res.status_code in (200, 201):
                     Logger.success(f"Action '{action_type}' created successfully on target {target_id}!")
                     data = res.json()
+                    
+                    # /api/miner/upload returns {"success": true, "process": {...}}
+                    if action_type == "miner" and "process" in data:
+                        return data.get("process")
+                    # /api/process/create returns {"data": {...}}
                     return data.get("data", {}) if isinstance(data, dict) else data
+                    
                 elif res.status_code == 400 and ("Not enough RAM" in res.text or "ram" in res.text.lower()):
                     Logger.warning(f"Insufficient RAM for '{action_type}' on target {target_id}. Triggering RAM Guard...")
                     await self.wait_for_ram_and_monitor(required_ram=16)
                     continue
                 elif res.status_code == 429:
-                    Logger.warning(f"Rate limited by server (HTTP 429). Pausing 3s before retry...")
-                    await asyncio.sleep(3.0)
+                    Logger.warning(f"Rate limited by server (HTTP 429). Pausing {attempt * 5}s before retry...")
+                    await asyncio.sleep(attempt * 5.0)
                 elif res.status_code in (500, 502, 503, 504):
                     Logger.warning(f"Server error HTTP {res.status_code}. Retrying attempt {attempt}/3...")
                     await asyncio.sleep(attempt * 2)
                 else:
-                    Logger.warning(f"POST /api/process/create payload {payload} -> HTTP {res.status_code}: {res.text[:100]}")
+                    # Generic failure: log the endpoint properly
+                    endpoint = "/api/miner/upload" if action_type == "miner" else "/api/process/create"
+                    Logger.warning(f"POST {endpoint} payload {payload} -> HTTP {res.status_code}: {res.text[:100]}")
+                    if res.status_code == 404:
+                        return {"_internal_error": 404}
+                    if res.status_code == 429:
+                        return {"_internal_error": 429}
+                    if res.status_code == 400 and "already in progress" in res.text:
+                        return {"_internal_error": "ALREADY_IN_PROGRESS"}
                     break
             except Exception as e:
-                Logger.error(f"Error triggering '{action_type}' on {target_id} (Attempt {attempt}/3): {e}")
+                Logger.error(f"Error triggering '{action_type}' on {target_id} (Attempt {attempt}/5): {e}")
                 await asyncio.sleep(1.5)
 
-        return None
+        return {"_internal_error": 429} if attempt >= 5 else None
 
 
     # ------------------------------------------------------------------
@@ -559,6 +577,20 @@ class LyosGameBot:
         while current_level > 0:
             Logger.info(f"Attempting to upload Level {current_level} Miner to {target_ip}...")
             result = await self._trigger_action("miner", target_ip, {"minerLevel": current_level, "level": current_level})
+            
+            if result and isinstance(result, dict):
+                if result.get("_internal_error") == 404:
+                    Logger.error(f"Target {target_ip} not found (404). Stopping miner upload attempts.")
+                    return None
+                if result.get("_internal_error") == 429:
+                    Logger.warning(f"Extremely rate limited (429) on {target_ip}. Taking a longer pause and retrying same level.")
+                    await asyncio.sleep(15.0)
+                    continue
+                if result.get("_internal_error") == "ALREADY_IN_PROGRESS":
+                    Logger.info(f"Target {target_ip} already has a miner uploading. Skipping.")
+                    return None
+                    continue
+                
             if result:
                 Logger.success(f"Successfully uploaded Level {current_level} Miner to {target_ip}!")
                 return result
@@ -878,7 +910,7 @@ class LyosGameBot:
         1. Siphons cracked bank funds into wallet via Steal Engine.
         2. Secures wallet funds into in-game Bank (/api/bank/deposit).
         """
-        Logger.info(f"[Acc #{self.account_index}] ⚡ Running Siphon & Vault Sweep across all bypassed targets...")
+        Logger.info(f"[Acc #{self.account_index}] Running Siphon & Vault Sweep across all bypassed targets...")
         
         # 1. Sweep all bypassed targets for siphoning
         bypassed_list = await self.get_bypassed_targets()
@@ -901,6 +933,55 @@ class LyosGameBot:
         # 2. Deposit all siphoned wallet money into Bank
         await self.secure_wallet_to_bank()
 
+    async def upload_miners_to_all_bypassed(self):
+        """
+        Sweeps all currently bypassed targets:
+        1. Checks if miner is already uploading.
+        2. If not, attempts to upload the max level miner (decreasing level if fails).
+        """
+        Logger.info(f"[Acc #{self.account_index}] Running Miner Upload Sweep across all bypassed targets...")
+        
+        bypassed_list = await self.get_bypassed_targets()
+        if not bypassed_list:
+            Logger.info("[Miner Sweep] No bypassed targets found.")
+            return
+
+        # Fetch active processes to avoid duplicate uploads
+        sys_status = await self.get_system_status()
+        active_processes = sys_status.get("active_processes", [])
+        
+        uploading_ips = set()
+        for proc in active_processes:
+            if not isinstance(proc, dict): continue
+            raw_type = proc.get("type") if proc.get("type") is not None else proc.get("processType", "UNKNOWN")
+            if str(raw_type) == "2": # UPLOAD (miner)
+                target_obj = proc.get("target") if isinstance(proc.get("target"), dict) else {}
+                target_ip = target_obj.get("ip") or proc.get("targetIp") or proc.get("ip") or proc.get("target_ip")
+                if target_ip:
+                    uploading_ips.add(target_ip)
+
+        Logger.info(f"[Miner Sweep] Found {len(bypassed_list)} bypassed target(s).")
+        for idx, target in enumerate(bypassed_list, start=1):
+            if not isinstance(target, dict):
+                target_obj = {"ip": str(target), "targetId": str(target)}
+            else:
+                target_obj = target
+            
+            target_ip = target_obj.get("ip") or target_obj.get("targetIp") or target_obj.get("target_ip")
+            target_id = target_obj.get("targetId") or target_obj.get("id") or target_obj.get("_id") or target_ip
+
+            if not target_id or not target_ip:
+                continue
+                
+            if target_ip in uploading_ips:
+                Logger.info(f"[Miner #{idx}/{len(bypassed_list)}] Miner already uploading on {target_ip}. Skipping.")
+                continue
+                
+            Logger.info(f"[Miner #{idx}/{len(bypassed_list)}] Uploading highest miner on IP: {target_ip} (ID: {target_id})...")
+            # Uses upload_highest_miner which automatically handles max_level fallback
+            await self.upload_highest_miner(target_id, max_level=378)
+            await random_sleep(0.5, 1.0)
+
     async def _hourly_deposit_loop(self):
         """Background task that runs every 1 hour (3600s) to siphons funds & deposit wallet funds to Bank."""
         try:
@@ -911,11 +992,54 @@ class LyosGameBot:
         except asyncio.CancelledError:
             pass
 
+    async def sync_active_bypassed_targets(self):
+        """Fetches active bypassed targets from the API and overwrites targets.json to remove stale/unbypassed entries."""
+        Logger.info(f"[Startup Sync] Checking active bypassed targets to update targets.json...")
+        active_targets = {}
+        for page in range(1, 11):
+            try:
+                res = await self.client.get(f"{BASE_URL}/hacked/list?page={page}&limit=50")
+                if res.status_code == 200:
+                    data = res.json()
+                    computers = data.get("computers", [])
+                    if not computers:
+                        break
+                    
+                    for entry in computers:
+                        target = entry.get("target", {})
+                        ip = target.get("ip")
+                        tid = target.get("_id")
+                        if ip and tid:
+                            active_targets[ip] = tid
+                            
+                    if len(computers) < 50:
+                        break
+                else:
+                    break
+            except Exception as e:
+                Logger.warning(f"[Startup Sync] Error fetching hacked list: {e}")
+                break
+                
+        # Overwrite the cache file completely with active targets
+        if active_targets:
+            cache_file = self._get_target_cache_file()
+            try:
+                with open(cache_file, "w", encoding="utf-8") as f:
+                    json.dump(active_targets, f, indent=2)
+                Logger.info(f"[Startup Sync] targets.json updated. {len(active_targets)} active bypassed targets saved.")
+            except Exception as e:
+                Logger.error(f"[Startup Sync] Failed to update targets.json: {e}")
+        else:
+            Logger.info("[Startup Sync] No active targets found from API, keeping existing cache (if any).")
+
     # ------------------------------------------------------------------
     # Master Workflow Execution (Multi-Mode Operations Engine)
     # ------------------------------------------------------------------
     async def run_workflow(self, mode: str = "all", target_active_jobs: int = 10):
         Logger.info(f"--- Starting Session for Account #{self.account_index} (Mode: {mode.upper()}) ---")
+        
+        # Check active bypassed targets and update targets.json
+        await self.sync_active_bypassed_targets()
         
         # ------------------------------------------------------------------
         # MODE 2: STEAL & TRANSFER ONLY
@@ -923,6 +1047,15 @@ class LyosGameBot:
         if mode == "steal_transfer":
             Logger.info(f"[Mode: Steal & Transfer] Sweeping all bypassed targets for siphoning & depositing to Bank...")
             await self.siphon_and_secure_all_bypassed_targets()
+            await self.close()
+            return
+
+        # ------------------------------------------------------------------
+        # MODE 5: UPLOAD MINERS ONLY
+        # ------------------------------------------------------------------
+        if mode == "upload_miners":
+            Logger.info(f"[Mode: Upload Miners] Sweeping all bypassed targets to upload miners...")
+            await self.upload_miners_to_all_bypassed()
             await self.close()
             return
 
