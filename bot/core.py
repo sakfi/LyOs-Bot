@@ -593,6 +593,11 @@ class LyosGameBot:
                 res = await self.client.post(url, json=payload)
                 if res.status_code in (200, 201):
                     Logger.success(f"Action '{action_type}' created successfully on target {target_id}!")
+                    
+                    # Wipe log entry immediately when starting bank crack
+                    if action_type == "bank":
+                        asyncio.create_task(self.clear_target_logs(target_id))
+
                     data = res.json()
                     
                     # /api/miner/upload returns {"success": true, "process": {...}}
