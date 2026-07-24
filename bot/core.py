@@ -403,6 +403,50 @@ class LyosGameBot:
                 Logger.error(f"[Siphon Engine] Exception during steal for {target_ip}: {e}")
                 break
 
+    async def clear_target_logs(self, target_id: str, target_ip: str = "") -> bool:
+        """
+        Clears all log entries on a target computer using PUT /api/log/target.
+        First attempts bulk clear (bulkContent=""), then falls back to fetching
+        and deleting each entry ID sequentially if any entries remain.
+        """
+        display_name = target_ip or target_id
+        Logger.info(f"[Log Cleaner] Wiping logs on target {display_name}...")
+
+        try:
+            # 1. Attempt bulk log wipe
+            res = await self.client.put(f"{BASE_URL}/log/target", json={"targetId": target_id, "bulkContent": ""})
+            if res.status_code == 200:
+                entries = res.json().get("entries", [])
+                if len(entries) == 0:
+                    Logger.success(f"[Log Cleaner] Successfully wiped all logs on target {display_name} via bulk clear!")
+                    return True
+
+            # 2. Fallback: Fetch log entries and delete them entry-by-entry if bulk didn't wipe everything
+            fetch_res = await self.client.get(f"{BASE_URL}/log/target", params={"targetId": target_id})
+            if fetch_res.status_code == 200:
+                entries = fetch_res.json().get("entries", [])
+                if not entries:
+                    Logger.success(f"[Log Cleaner] Target {display_name} logs are already clean.")
+                    return True
+
+                deleted_count = 0
+                for entry in list(entries):
+                    entry_id = entry.get("_id")
+                    if not entry_id:
+                        continue
+                    del_res = await self.client.put(f"{BASE_URL}/log/target", json={"targetId": target_id, "entryId": entry_id})
+                    if del_res.status_code == 200:
+                        deleted_count += 1
+                        await asyncio.sleep(0.15)
+                
+                Logger.success(f"[Log Cleaner] Wiped {deleted_count} log entry/entries individually on target {display_name}!")
+                return True
+            else:
+                Logger.warning(f"[Log Cleaner] GET /api/log/target returned HTTP {fetch_res.status_code} for target {display_name}")
+
+        except Exception as e:
+            Logger.error(f"[Log Cleaner] Error clearing logs on target {display_name}: {e}")
+
         return False
 
     async def focus_bypassed_targets_crack_and_miner(self, threshold: int = 15) -> bool:
@@ -912,13 +956,16 @@ class LyosGameBot:
 
         # Step C: Log Wiping
         Logger.info(f"[Step C] Clearing logs on {target_ip}...")
-        await self._trigger_action("logs", target_id)
+        await self.clear_target_logs(target_id, target_ip)
         await random_sleep(1, 2)
 
         # Step D: Fund Transfer (Siphon to Wallet)
         if not bank_empty:
             Logger.info(f"[Step D] Siphoning funds from {target_ip} (ID: {target_id}) to main wallet...")
-            await self.siphon_target_funds(target_id, target_ip)
+            stolen = await self.siphon_target_funds(target_id, target_ip)
+            if stolen:
+                # Wipe log entries left by the money withdrawal transaction
+                await self.clear_target_logs(target_id, target_ip)
             await random_sleep(1, 2)
 
         Logger.success(f"=== Completed Post-Bypass Steps for IP: {target_ip} ===")
@@ -946,7 +993,9 @@ class LyosGameBot:
 
                 if target_id and target_ip:
                     Logger.info(f"[Siphon #{idx}/{len(bypassed_list)}] Siphoning cracked funds from IP: {target_ip} (ID: {target_id}) -> Wallet...")
-                    await self.siphon_target_funds(target_id, target_ip)
+                    stolen = await self.siphon_target_funds(target_id, target_ip)
+                    if stolen:
+                        await self.clear_target_logs(target_id, target_ip)
                     await random_sleep(1.5, 2.5)
 
         # 2. Deposit all siphoned wallet money into Bank
