@@ -99,6 +99,8 @@ class LyosGameBot:
                 res = await self.client.post(f"{BASE_URL}/bank/deposit", json={"amount": amount_to_deposit})
                 if res.status_code in (200, 201):
                     Logger.success(f"[Acc #{self.account_index}] Successfully deposited ${amount_to_deposit} from Wallet to Bank!")
+                    # Clear own account logs after transfer to bank
+                    await self.clear_own_logs()
                     return True
                 elif res.status_code == 429:
                     pause_time = attempt * 5.0
@@ -450,6 +452,28 @@ class LyosGameBot:
         except Exception as e:
             Logger.error(f"[Log Cleaner] Error clearing logs on target {display_name}: {e}")
 
+        return False
+
+    async def clear_own_logs(self) -> bool:
+        """
+        Clears all log entries on the user's own account log using PUT /api/log.
+        Sends bulkContent="" to clear all local activity logs (e.g. Bank deposit records).
+        """
+        Logger.info(f"[Acc #{self.account_index}] Wiping own account logs...")
+        try:
+            res = await self.client.put(f"{BASE_URL}/log", json={"bulkContent": ""})
+            if res.status_code == 200:
+                Logger.success(f"[Acc #{self.account_index}] Successfully wiped own account logs!")
+                return True
+            else:
+                # Fallback POST/PUT attempt if payload varies
+                res_alt = await self.client.put(f"{BASE_URL}/log", json={"log": ""})
+                if res_alt.status_code == 200:
+                    Logger.success(f"[Acc #{self.account_index}] Successfully wiped own account logs!")
+                    return True
+                Logger.warning(f"[Acc #{self.account_index}] Own log clear returned HTTP {res.status_code}")
+        except Exception as e:
+            Logger.error(f"[Acc #{self.account_index}] Error clearing own logs: {e}")
         return False
 
     async def focus_bypassed_targets_crack_and_miner(self, threshold: int = 15) -> bool:
