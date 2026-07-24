@@ -20,24 +20,26 @@ def get_user_mode_choice() -> str:
 =====================================================
             SELECT OPERATIONAL MODE
 =====================================================
-  [1] Bypass & Crack   - Scanning, Firewall Bypass, Bank Crack & Miners
-  [2] Steal & Transfer - Siphon cracked targets & Vault wallet money -> Bank
-  [3] Quest Mode       - Claim Daily Check-ins, Daily Quests & Siphon Tasks
-  [4] All Modes (Full) - Perform ALL operations continuously with RAM Guard
-  [5] Upload Miners    - Check bypassed targets and upload max level miner
+  [1] Bypass          - Scanning, Firewall Bypass
+  [2] Crack           - Bank Crack
+  [3] Steal & Transfer- Siphon cracked targets & Vault wallet money -> Bank
+  [4] Quest Mode      - Claim Daily Check-ins, Daily Quests & Siphon Tasks
+  [5] Upload Miners   - Sweep bypassed targets & upload max level miner
+  [6] All Modes (Full)- Perform ALL operations continuously with RAM Guard (Default)
 =====================================================
 """)
     try:
-        choice = input("Enter option [1-5] (Default: 4): ").strip()
+        choice = input("Enter option [1-6] (Default: 6): ").strip()
     except (EOFError, KeyboardInterrupt):
-        choice = "4"
+        choice = "6"
 
     mode_map = {
-        "1": "bypass_crack",
-        "2": "steal_transfer",
-        "3": "quest",
-        "4": "all",
-        "5": "upload_miners"
+        "1": "bypass",
+        "2": "crack",
+        "3": "steal_transfer",
+        "4": "quest",
+        "5": "upload_miners",
+        "6": "all",
     }
     selected_mode = mode_map.get(choice, "all")
     Logger.info(f"Selected Mode: {selected_mode.upper()}")

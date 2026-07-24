@@ -89,29 +89,29 @@ class LyosGameBot:
             Logger.info(f"[Acc #{self.account_index}] Wallet check complete: No funds in wallet (0).")
             return True
 
-        # LyOS stores currency in cents (e.g., 171000 = $1710.00). Convert if stored in cents representation.
-        if wallet_balance >= 100 and wallet_balance % 100 == 0 and wallet_balance > 10000:
-            actual_amount = wallet_balance / 100.0
-        else:
-            actual_amount = wallet_balance
+        # Exact wallet balance (dollars and cents)
+        amount_to_deposit = round(wallet_balance, 2)
 
-        amount_to_deposit = int(actual_amount) if actual_amount.is_integer() else round(actual_amount, 2)
-
-        try:
-            Logger.info(f"[Acc #{self.account_index}] Wallet check: Found {amount_to_deposit} in wallet. Depositing -> Bank...")
-            res = await self.client.post(f"{BASE_URL}/bank/deposit", json={"amount": amount_to_deposit})
-            if res.status_code in (200, 201):
-                Logger.success(f"[Acc #{self.account_index}] Successfully deposited {amount_to_deposit} from Wallet to Bank!")
-                return True
-            else:
-                # If server rejects whole units, attempt raw wallet_balance
-                res_fallback = await self.client.post(f"{BASE_URL}/bank/deposit", json={"amount": int(wallet_balance)})
-                if res_fallback.status_code in (200, 201):
-                    Logger.success(f"[Acc #{self.account_index}] Successfully deposited {wallet_balance} from Wallet to Bank!")
+        max_deposit_attempts = 3
+        for attempt in range(1, max_deposit_attempts + 1):
+            try:
+                Logger.info(f"[Acc #{self.account_index}] Wallet check: Found ${amount_to_deposit} in wallet. Depositing -> Bank...")
+                res = await self.client.post(f"{BASE_URL}/bank/deposit", json={"amount": amount_to_deposit})
+                if res.status_code in (200, 201):
+                    Logger.success(f"[Acc #{self.account_index}] Successfully deposited ${amount_to_deposit} from Wallet to Bank!")
                     return True
-                Logger.warning(f"[Acc #{self.account_index}] Bank deposit failed: HTTP {res.status_code} - {res.text}")
-        except Exception as e:
-            Logger.error(f"[Acc #{self.account_index}] Bank deposit error: {e}")
+                elif res.status_code == 429:
+                    pause_time = attempt * 5.0
+                    Logger.warning(f"[Acc #{self.account_index}] Bank deposit rate limited (HTTP 429). Retrying in {pause_time}s (Attempt {attempt}/{max_deposit_attempts})...")
+                    await asyncio.sleep(pause_time)
+                    continue
+                else:
+                    # Log exact error response body for diagnosis
+                    Logger.warning(f"[Acc #{self.account_index}] Bank deposit failed: HTTP {res.status_code} - {res.text[:200]}")
+                    break
+            except Exception as e:
+                Logger.error(f"[Acc #{self.account_index}] Bank deposit error: {e}")
+                break
         return False
 
     async def claim_quests(self) -> bool:
@@ -368,27 +368,40 @@ class LyosGameBot:
             Logger.warning(f"[Siphon Engine] Failed to solve ALTCHA challenge for {target_ip}. Cannot steal.")
             return False
 
-        # Step 3: Execute steal
-        try:
-            steal_body = {
-                "targetId": target_id,
-                "amount": balance,
-                "altchaPayload": altcha_payload,
-            }
-            res = await self.client.post(f"{BASE_URL}/hack/steal", json=steal_body)
-            if res.status_code in (200, 201):
-                try:
-                    result = res.json()
-                    stolen = result.get("stolen", 0)
-                    commission = result.get("commission", 0)
-                    Logger.success(f"[Siphon Engine] STOLEN ${stolen} from {target_ip}! (commission: ${commission})")
-                except Exception:
-                    Logger.success(f"[Siphon Engine] Successfully stole funds from {target_ip}! Response: {res.text[:200]}")
-                return True
-            else:
-                Logger.warning(f"[Siphon Engine] Steal failed for {target_ip}: HTTP {res.status_code} -> {res.text[:200]}")
-        except Exception as e:
-            Logger.error(f"[Siphon Engine] Exception during steal for {target_ip}: {e}")
+        # Step 3: Execute steal with retry logic for HTTP 429
+        max_attempts = 3
+        for attempt in range(1, max_attempts + 1):
+            try:
+                steal_body = {
+                    "targetId": target_id,
+                    "amount": balance,
+                    "altchaPayload": altcha_payload,
+                }
+                res = await self.client.post(f"{BASE_URL}/hack/steal", json=steal_body)
+                if res.status_code in (200, 201):
+                    try:
+                        result = res.json()
+                        stolen = result.get("stolen", 0)
+                        commission = result.get("commission", 0)
+                        Logger.success(f"[Siphon Engine] STOLEN ${stolen} from {target_ip}! (commission: ${commission})")
+                    except Exception:
+                        Logger.success(f"[Siphon Engine] Successfully stole funds from {target_ip}! Response: {res.text[:200]}")
+                    return True
+                elif res.status_code == 429:
+                    pause_time = attempt * 5.0
+                    Logger.warning(f"[Siphon Engine] Steal rate limited (HTTP 429) for {target_ip}. Retrying in {pause_time}s (Attempt {attempt}/{max_attempts})...")
+                    await asyncio.sleep(pause_time)
+                    # Refresh ALTCHA payload if retrying to prevent payload reuse/expiry
+                    if attempt < max_attempts:
+                        new_payload = await self._solve_altcha_challenge(balance)
+                        if new_payload:
+                            altcha_payload = new_payload
+                else:
+                    Logger.warning(f"[Siphon Engine] Steal failed for {target_ip}: HTTP {res.status_code} -> {res.text[:200]}")
+                    break
+            except Exception as e:
+                Logger.error(f"[Siphon Engine] Exception during steal for {target_ip}: {e}")
+                break
 
         return False
 
@@ -427,15 +440,16 @@ class LyosGameBot:
 
         return False
 
-    async def perform_random_scan(self, max_scans: int = 5) -> List[Dict]:
+    async def perform_random_scan(self, max_scans: int = 5, quest_mode: bool = False) -> List[Dict]:
         """
         Navigates to Scan Tab (bottom right) and triggers 'Random Scan' repeatedly.
         Each scan returns 5 random target accounts.
         Filters for:
         - Reputation == 0
-        - Firewall Level >= 80
+        - Normal Mode: Firewall Level >= 100
+        - Quest Mode: Firewall Level 1..10 (for fast bypass & crack)
         """
-        Logger.info(f"[Acc #{self.account_index}] Opening Scan Tab & triggering Random Scans...")
+        Logger.info(f"[Acc #{self.account_index}] Opening Scan Tab & triggering Random Scans (Quest Mode: {quest_mode})...")
         matched_targets = []
         target_ips_seen = set()
 
@@ -475,17 +489,20 @@ class LyosGameBot:
                         ip = acc.get("ip")
                         target_id = acc.get("_id") or acc.get("id") or acc.get("targetId") or acc.get("ip")
 
-                        # Filter strictly for: Reputation == 0 AND Firewall Level >= 100
                         if ip and ip not in target_ips_seen:
                             target_ips_seen.add(ip)
                             if target_id and target_id != ip:
                                 self.save_target_cache({ip: target_id})
-                            if int(rep) == 0 and int(firewall) >= 100:
+                            
+                            fw_int = int(firewall)
+                            is_match = (quest_mode and fw_int <= 10) or (not quest_mode and int(rep) == 0 and fw_int >= 100)
+                            
+                            if is_match:
                                 acc["targetId"] = target_id
                                 Logger.success(f"[Matched Target] IP: {ip} (ID: {acc['targetId']}) | Rep: {rep} | Firewall: {firewall}")
                                 matched_targets.append(acc)
                             else:
-                                Logger.info(f"[Skipped Target] IP: {ip} | Rep: {rep} | Firewall: {firewall} (Requires Rep==0 & Firewall>=100)")
+                                Logger.info(f"[Skipped Target] IP: {ip} | Rep: {rep} | Firewall: {firewall} (QuestMode={quest_mode})")
                 else:
                     Logger.warning(f"Random scan returned HTTP {res.status_code}")
             except Exception as e:
@@ -538,14 +555,15 @@ class LyosGameBot:
                     return data.get("data", {}) if isinstance(data, dict) else data
                     
                 elif res.status_code == 400 and ("Not enough RAM" in res.text or "ram" in res.text.lower()):
-                    Logger.warning(f"Insufficient RAM for '{action_type}' on target {target_id}. Triggering RAM Guard...")
-                    await self.wait_for_ram_and_monitor(required_ram=16)
+                    Logger.warning(f"Insufficient RAM for '{action_type}' on target {target_id}. Triggering RAM Guard (Waiting for 3GB free RAM)...")
+                    await self.wait_for_ram_and_monitor(required_ram=3072)
                     continue
                 elif res.status_code == 429:
-                    Logger.warning(f"Rate limited by server (HTTP 429). Pausing {attempt * 5}s before retry...")
-                    await asyncio.sleep(attempt * 5.0)
+                    pause_time = attempt * 8.0
+                    Logger.warning(f"Rate limited by server (HTTP 429). Pausing {pause_time}s before retry (Attempt {attempt}/5)...")
+                    await asyncio.sleep(pause_time)
                 elif res.status_code in (500, 502, 503, 504):
-                    Logger.warning(f"Server error HTTP {res.status_code}. Retrying attempt {attempt}/3...")
+                    Logger.warning(f"Server error HTTP {res.status_code}. Retrying attempt {attempt}/5...")
                     await asyncio.sleep(attempt * 2)
                 else:
                     # Generic failure: log the endpoint properly
@@ -583,8 +601,8 @@ class LyosGameBot:
                     Logger.error(f"Target {target_ip} not found (404). Stopping miner upload attempts.")
                     return None
                 if result.get("_internal_error") == 429:
-                    Logger.warning(f"Extremely rate limited (429) on {target_ip}. Taking a longer pause and retrying same level.")
-                    await asyncio.sleep(15.0)
+                    Logger.warning(f"Rate limit threshold reached on {target_ip}. Cooling down for 20s before retry.")
+                    await asyncio.sleep(20.0)
                     continue
                 if result.get("_internal_error") == "ALREADY_IN_PROGRESS":
                     Logger.info(f"Target {target_ip} already has a miner uploading. Skipping.")
@@ -789,7 +807,7 @@ class LyosGameBot:
             "type_counts": type_counts
         }
 
-    async def wait_for_ram_and_monitor(self, required_ram: int = 16) -> int:
+    async def wait_for_ram_and_monitor(self, required_ram: int = 3072) -> int:
         """
         Self-Intelligent RAM Guard:
         When system RAM is full/exhausted:
@@ -797,13 +815,14 @@ class LyosGameBot:
         2. Only checks for money in wallet and deposits to bank.
         3. Monitors remaining time on pending jobs.
         4. When a job completes, re-inspects RAM and logs freed memory.
-        5. Resumes operations once required RAM is available.
+        5. Resumes operations once required RAM (min 3 GB / 3072 MB) is available.
         """
-        Logger.warning(f"[RAM Guard] System Memory (RAM) is FULL/EXHAUSTED! Halting operation & bypass target scanning.")
+        target_ram = max(3072, required_ram)
+        Logger.warning(f"[RAM Guard] System Memory (RAM) below threshold! Halting operation & bypass target scanning (Requires {target_ram} MB / ~3 GB free RAM).")
 
         while True:
             # 1. Sweep all bypassed targets for siphoning & deposit wallet money to bank (requires 0 RAM)
-            Logger.info(f"[RAM Guard] RAM is full. Running 0-RAM Siphon & Vault Sweep across bypassed targets...")
+            Logger.info(f"[RAM Guard] Free RAM below 3GB threshold. Running 0-RAM Siphon & Vault Sweep across bypassed targets...")
             await self.siphon_and_secure_all_bypassed_targets()
 
             # 2. Check RAM & pending jobs
@@ -812,13 +831,13 @@ class LyosGameBot:
             total_ram = sys_status.get("total_ram", 0)
             active_procs = sys_status.get("active_processes", [])
 
-            # Check if RAM has been freed up
-            if free_ram >= max(16, required_ram) or (total_ram > 0 and free_ram > 0 and not active_procs):
-                Logger.success(f"[RAM Guard] RAM Freed! Free memory: {free_ram} MB. Resuming operations.")
+            # Check if RAM has been freed up (must be >= target_ram, i.e., at least 3GB)
+            if free_ram >= target_ram or (total_ram > 0 and free_ram >= 3072 and not active_procs):
+                Logger.success(f"[RAM Guard] RAM Freed! Free memory: {free_ram} MB (>= {target_ram} MB requirement). Resuming operations.")
                 return free_ram
 
-            if not active_procs:
-                Logger.info(f"[RAM Guard] No active running jobs found. System RAM is clear ({free_ram} MB). Resuming...")
+            if not active_procs and free_ram >= 3072:
+                Logger.info(f"[RAM Guard] No active running jobs found and RAM meets 3GB threshold ({free_ram} MB). Resuming...")
                 return free_ram
 
             # Log active process status and remaining time
@@ -830,8 +849,8 @@ class LyosGameBot:
                     if 0 < rem < min_rem_sec:
                         min_rem_sec = rem
 
-            sleep_duration = max(5, min(min_rem_sec + 1, 15))
-            Logger.info(f"[RAM Full Halt] Halting operations. Monitoring RAM & wallet (Checking again in {sleep_duration}s)...")
+            sleep_duration = 1800  # 30 minutes sleep when RAM is full
+            Logger.info(f"[RAM Full Halt] Halting operations for 30 min. Monitoring RAM & wallet (Checking again in {sleep_duration}s / 30m)...")
             await asyncio.sleep(sleep_duration)
 
     async def start_firewall_bypass(self, target: dict) -> Optional[dict]:
@@ -928,7 +947,7 @@ class LyosGameBot:
                 if target_id and target_ip:
                     Logger.info(f"[Siphon #{idx}/{len(bypassed_list)}] Siphoning cracked funds from IP: {target_ip} (ID: {target_id}) -> Wallet...")
                     await self.siphon_target_funds(target_id, target_ip)
-                    await random_sleep(0.5, 1.0)
+                    await random_sleep(1.5, 2.5)
 
         # 2. Deposit all siphoned wallet money into Bank
         await self.secure_wallet_to_bank()
@@ -980,7 +999,7 @@ class LyosGameBot:
             Logger.info(f"[Miner #{idx}/{len(bypassed_list)}] Uploading highest miner on IP: {target_ip} (ID: {target_id})...")
             # Uses upload_highest_miner which automatically handles max_level fallback
             await self.upload_highest_miner(target_id, max_level=378)
-            await random_sleep(0.5, 1.0)
+            await random_sleep(2.0, 3.5)
 
     async def _hourly_deposit_loop(self):
         """Background task that runs every 1 hour (3600s) to siphons funds & deposit wallet funds to Bank."""
@@ -1042,11 +1061,125 @@ class LyosGameBot:
         await self.sync_active_bypassed_targets()
         
         # ------------------------------------------------------------------
-        # MODE 2: STEAL & TRANSFER ONLY
+        # MODE 1: BYPASS ONLY (Scanning & Firewall Bypass)
+        # ------------------------------------------------------------------
+        if mode == "bypass":
+            Logger.info(f"[Mode: Bypass] Scanning & triggering Firewall Bypass on target accounts...")
+            sys_status = await self.get_system_status()
+            if sys_status.get("total_ram", 0) > 0 and sys_status.get("free_ram", 0) <= 16:
+                await self.wait_for_ram_and_monitor(required_ram=32)
+
+            await self.log_active_processes()
+            active_bypasses: Dict[str, dict] = {}
+            while len(active_bypasses) < target_active_jobs:
+                sys_status = await self.get_system_status()
+                if sys_status.get("total_ram", 0) > 0 and sys_status.get("free_ram", 0) <= 16:
+                    await self.wait_for_ram_and_monitor(required_ram=32)
+
+                current_count = await self.get_active_jobs_count()
+                total_active = current_count + len(active_bypasses)
+                if total_active >= target_active_jobs:
+                    break
+
+                new_targets = await self.perform_random_scan(max_scans=5)
+                for target in new_targets:
+                    ip = target.get("ip")
+                    if ip and ip not in active_bypasses:
+                        job = await self.start_firewall_bypass(target)
+                        if job:
+                            active_bypasses[ip] = job
+                        if len(active_bypasses) >= target_active_jobs:
+                            break
+                await random_sleep(1.0, 2.0)
+
+            Logger.info(f"[Mode: Bypass] Initiated {len(active_bypasses)} active bypass jobs.")
+            await self.close()
+            return
+
+        # ------------------------------------------------------------------
+        # MODE 2: CRACK ONLY (Bank Crack across bypassed targets)
+        # ------------------------------------------------------------------
+        if mode == "crack":
+            Logger.info(f"[Mode: Crack] Sweeping all bypassed targets to perform Bank Crack...")
+            bypassed_list = await self.get_bypassed_targets()
+            if bypassed_list:
+                for idx, target in enumerate(bypassed_list, start=1):
+                    if not isinstance(target, dict):
+                        continue
+                    target_ip = target.get("ip") or target.get("targetIp") or target.get("target_ip")
+                    target_id = target.get("targetId") or target.get("id") or target.get("_id") or target_ip
+                    if target_id and target_ip:
+                        Logger.info(f"[Crack #{idx}/{len(bypassed_list)}] Triggering Bank Crack on {target_ip}...")
+                        await self._trigger_action("bank", target_id)
+                        await random_sleep(1.0, 2.0)
+            await self.close()
+            return
+
+        # ------------------------------------------------------------------
+        # MODE 3: STEAL & TRANSFER ONLY
         # ------------------------------------------------------------------
         if mode == "steal_transfer":
             Logger.info(f"[Mode: Steal & Transfer] Sweeping all bypassed targets for siphoning & depositing to Bank...")
             await self.siphon_and_secure_all_bypassed_targets()
+            await self.close()
+            return
+
+        # ------------------------------------------------------------------
+        # MODE 4: QUEST MODE ONLY (Intelligent Daily Quest Solver)
+        # ------------------------------------------------------------------
+        if mode == "quest":
+            Logger.info(f"[Mode: Quest] Running Intelligent Daily Quest Solver...")
+            
+            # Step 1: Claim daily check-in
+            if self.config.get("auto_daily_checkin", True):
+                await self.daily_checkin()
+
+            # Step 2: Fetch low firewall level targets (1-10) for fast operations
+            Logger.info(f"[Quest Mode] Scanning low firewall level targets (Level 1-10) for quick quest completion...")
+            quest_targets = await self.perform_random_scan(max_scans=6, quest_mode=True)
+            
+            # Step 3: Trigger bypasses on low-level targets
+            active_quest_bypasses: Dict[str, dict] = {}
+            for target in quest_targets[:10]:
+                ip = target.get("ip")
+                if ip:
+                    job = await self.start_firewall_bypass(target)
+                    if job:
+                        active_quest_bypasses[ip] = job
+
+            # Wait for low-level bypasses to finish
+            if active_quest_bypasses:
+                Logger.info(f"[Quest Mode] Waiting for {len(active_quest_bypasses)} low-level bypasses to complete...")
+                for ip, job in active_quest_bypasses.items():
+                    duration = job.get("duration_seconds", 15)
+                    await asyncio.sleep(duration + 1)
+
+            # Step 4: Perform low-level bank cracks & Level 1 miner uploads across bypassed targets
+            bypassed_list = await self.get_bypassed_targets()
+            if bypassed_list:
+                Logger.info(f"[Quest Mode] Processing bank cracks & level 1 miner uploads on {len(bypassed_list)} bypassed target(s)...")
+                for target in bypassed_list:
+                    if not isinstance(target, dict):
+                        continue
+                    t_ip = target.get("ip") or target.get("targetIp") or target.get("target_ip")
+                    t_id = target.get("targetId") or target.get("id") or target.get("_id") or t_ip
+                    if t_id and t_ip:
+                        # 4a. Trigger Bank Crack (Low security = fast crack)
+                        Logger.info(f"[Quest Mode] Cracking bank on low-level target: {t_ip}...")
+                        await self._trigger_action("bank", t_id)
+                        
+                        # 4b. Upload Level 1 miner for quick upload duration
+                        Logger.info(f"[Quest Mode] Uploading Level 1 miner to target: {t_ip}...")
+                        await self._trigger_action("miner", t_id, extra_params={"minerLevel": 1})
+                        await random_sleep(1.0, 2.0)
+
+            # Step 5: Siphon funds & claim completed quest rewards
+            await self.siphon_and_secure_all_bypassed_targets()
+            if self.config.get("auto_complete_tasks", True):
+                await self.claim_quests()
+            
+            # Step 6: Secure any newly claimed cash rewards from Wallet -> Bank
+            await self.secure_wallet_to_bank()
             await self.close()
             return
 
@@ -1060,65 +1193,7 @@ class LyosGameBot:
             return
 
         # ------------------------------------------------------------------
-        # MODE 3: QUEST MODE ONLY
-        # ------------------------------------------------------------------
-        if mode == "quest":
-            Logger.info(f"[Mode: Quest] Checking & claiming daily quests & check-in rewards...")
-            if self.config.get("auto_daily_checkin", True):
-                await self.daily_checkin()
-            if self.config.get("auto_complete_tasks", True):
-                await self.claim_quests()
-            # Perform a siphon & deposit sweep to complete any pending transfer tasks
-            await self.siphon_and_secure_all_bypassed_targets()
-            await self.close()
-            return
-
-        # ------------------------------------------------------------------
-        # MODE 1: BYPASS & CRACK ONLY
-        # ------------------------------------------------------------------
-        if mode == "bypass_crack":
-            Logger.info(f"[Mode: Bypass & Crack] Running Target Scanning, Firewall Breaches, Bank Cracks & Miners...")
-            sys_status = await self.get_system_status()
-            if sys_status.get("total_ram", 0) > 0 and sys_status.get("free_ram", 0) <= 16:
-                await self.wait_for_ram_and_monitor(required_ram=32)
-
-            await self.log_active_processes()
-            
-            focused = await self.focus_bypassed_targets_crack_and_miner(threshold=15)
-            if not focused:
-                active_bypasses: Dict[str, dict] = {}
-                while len(active_bypasses) < target_active_jobs:
-                    sys_status = await self.get_system_status()
-                    if sys_status.get("total_ram", 0) > 0 and sys_status.get("free_ram", 0) <= 16:
-                        await self.wait_for_ram_and_monitor(required_ram=32)
-
-                    current_count = await self.get_active_jobs_count()
-                    total_active = current_count + len(active_bypasses)
-                    if total_active >= target_active_jobs:
-                        break
-
-                    new_targets = await self.perform_random_scan(max_scans=5)
-                    for target in new_targets:
-                        ip = target.get("ip")
-                        if ip and ip not in active_bypasses:
-                            job = await self.start_firewall_bypass(target)
-                            if job:
-                                active_bypasses[ip] = job
-                            if len(active_bypasses) >= target_active_jobs:
-                                break
-                    await random_sleep(1.0, 2.0)
-
-                Logger.info(f"[Bypass & Crack] Processing {len(active_bypasses)} active bypass jobs...")
-                for ip, job in active_bypasses.items():
-                    duration = job.get("duration_seconds", 30)
-                    await asyncio.sleep(duration + 1)
-                    await self.process_bypassed_target(ip)
-
-            await self.close()
-            return
-
-        # ------------------------------------------------------------------
-        # MODE 4: ALL MODES (ALL) - Autonomous Engine
+        # MODE 6: ALL MODES (FULL) - Autonomous Engine (Default)
         # ------------------------------------------------------------------
         # 0. First Turn-On / Startup Check: Sweep all bypassed targets for siphoning & secure all wallet funds -> bank immediately
         Logger.info(f"[Startup Sweep] Running full siphon & vault sweep across all bypassed targets on bot startup...")

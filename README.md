@@ -29,7 +29,7 @@ Core Hacking Modules:
   - Startup Active Target Sync (Auto-cleans & syncs targets.json on boot)
   - Startup Wallet Auto-Deposit (Immediate Vault Protection)
   - 1-Hour Vault Defense Loop (Background Cron Timer)
-  - Self-Intelligent RAM Guard (Auto-Halt when RAM <= 16MB)
+  - Self-Intelligent RAM Guard (Auto-Halt when Free RAM < 3 GB / 3072 MB)
   - Dynamic Memory Recovery (Monitors job timers & freed RAM)
   - Bypassed Target Focus Mode (Prioritizes >= 15 Bypassed Targets)
   - Level-378 Miner Deployment (Auto-decrement 378 -> 1 fallback via /api/miner/upload)
@@ -44,8 +44,8 @@ Live System Telemetry:
   [23:20:01] [ℹ] TARGET_SYNC: Updated targets.json with 15 active bypassed targets
   [23:20:02] [✔] WALLET_GUARD: Transferred 45,000 funds -> In-Game Bank
   [23:20:05] [⚡] FOCUS_MODE: Detected 15 bypassed targets -> Cracking Banks & Miners
-  [23:20:15] [!] RAM_ALERT: Memory full (12MB free). Halting scans -> Monitoring job timers
-  [23:20:45] [✔] RAM_RECOVERED: 128MB free memory restored -> Resuming core operations
+  [23:20:15] [!] RAM_ALERT: Memory below threshold (1024MB free < 3072MB required). Halting scans -> Monitoring job timers
+  [23:20:45] [✔] RAM_RECOVERED: 3200MB free memory restored (>= 3GB) -> Resuming core operations
 ```
 
 ---
@@ -58,18 +58,18 @@ graph TD
     S --> B["🏦 Startup Wallet Check & Bank Secure"]
     B --> C["🛡️ System RAM & Process Monitor"]
     
-    C -->|"RAM Full (<= 16MB)"| D["🛑 RAM Guard Active"]
+    C -->|"Free RAM < 3 GB (3072MB)"| D["🛑 RAM Guard Active"]
     D --> D1["💰 Wallet Only Surveillance"]
     D1 --> D2["⌛ Job Timer Tracking"]
-    D2 -->|"RAM Freed"| C
+    D2 -->|"Free RAM >= 3 GB"| C
     
-    C -->|"RAM Normal (> 16MB)"| E["🎯 Bypassed Target Check"]
+    C -->|"Free RAM >= 3 GB"| E["🎯 Bypassed Target Check"]
     
     E -->|"Bypassed >= 15"| F["⚡ Focus Mode Activated"]
     F --> F1["🔓 Crack Bank Account"]
     F1 --> F2["⛏️ Upload Level-378 Miner (/api/miner/upload)"]
     F2 --> F3["🧹 Wipe Logs & Siphon Funds"]
-    F3 --> F4["🏦 Bank Auto-Deposit"]
+    F4 --> F4["🏦 Bank Auto-Deposit"]
     
     E -->|"Bypassed < 15"| G["🔍 Target Scan & Breach"]
     G --> G1["Maintain 9-10 Active Bypass Jobs"]
@@ -83,7 +83,7 @@ graph TD
 | Feature Module | Description | Technical Mechanism |
 | :--- | :--- | :--- |
 | 🔄 **Startup Target Sync** | Target cache sanitation | Automatically syncs `/api/hacked/list` on boot to update `targets.json` and purge stale targets. |
-| 🛡️ **Self-Intelligent RAM Guard** | Hardware memory protection | Halts operations when RAM $\le 16$ MB. Runs wallet surveillance & resumes automatically upon RAM release. |
+| 🛡️ **Self-Intelligent RAM Guard** | Hardware memory protection | Halts operations when Free RAM $< 3$ GB (3072 MB). Runs wallet surveillance & resumes automatically once 3GB free RAM is restored. |
 | 🏦 **Automated Vault Protection** | Financial safety & auto-deposit | Immediate startup deposit + background 1-hour periodic schedule (`3600s`). |
 | 🎯 **Bypassed Target Focus Mode** | Dedicated exploitation | Auto-detects $\ge 15$ bypassed targets and pauses scanning to prioritize Bank Cracks & Miners. |
 | ⛏️ **Highest-Level Miner Upload** | Income yield optimization | Dedicated `/api/miner/upload` integration; attempts **Level 378** miner deployment with auto-decrement ($378 \rightarrow 1$) on failure. |
@@ -151,11 +151,12 @@ python main.py
 ```
 
 Upon startup, select your desired **Operational Mode**:
-- `[1] Bypass & Crack`: Scanning, Firewall Bypass, Bank Crack & Miners
-- `[2] Steal & Transfer`: Siphon cracked targets & Vault wallet money -> Bank
-- `[3] Quest Mode`: Claim Daily Check-ins, Daily Quests & Siphon Tasks
-- `[4] All Modes (Full)`: Perform ALL operations continuously with RAM Guard *(Default)*
-- `[5] Upload Miners`: Sweep bypassed targets & upload max level miner (Level 378 fallback)
+- `[1] Bypass`: Scanning, Firewall Bypass
+- `[2] Crack`: Bank Crack
+- `[3] Steal & Transfer`: Siphon cracked targets & Vault wallet money -> Bank
+- `[4] Quest Mode`: Claim Daily Check-ins, Daily Quests & Siphon Tasks
+- `[5] Upload Miners`: Sweep bypassed targets & upload max level miner
+- `[6] All Modes (Full)`: Perform ALL operations continuously with RAM Guard *(Default)*
 
 ---
 
