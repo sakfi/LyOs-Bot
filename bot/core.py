@@ -386,6 +386,9 @@ class LyosGameBot:
                         Logger.success(f"[Siphon Engine] STOLEN ${stolen} from {target_ip}! (commission: ${commission})")
                     except Exception:
                         Logger.success(f"[Siphon Engine] Successfully stole funds from {target_ip}! Response: {res.text[:200]}")
+                    
+                    # Wipe log entry created by the steal transaction immediately
+                    await self.clear_target_logs(target_id, target_ip)
                     return True
                 elif res.status_code == 429:
                     pause_time = attempt * 5.0
